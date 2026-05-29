@@ -54,6 +54,9 @@ export default {
       return javascript(renderAppScript());
     }
     if (url.pathname === "/health") {
+      if (wantsHtml(request, url)) {
+        return html(renderHealthPage(url.origin));
+      }
       return json(buildHealthPayload());
     }
     if (url.pathname !== "/sync") {
@@ -596,6 +599,69 @@ function renderHomePage(origin: string): string {
   <script src="/assets/app.js" defer></script>
 </body>
 </html>`;
+}
+
+function renderHealthPage(origin: string): string {
+  const payload = buildHealthPayload();
+  const syncUrl = `${origin.replace(/^http/, "ws")}/sync`;
+  return `<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Simple Live Sync Health</title>
+  <style>
+    :root { color-scheme: light dark; --bg:#f6f7f4; --panel:#fff; --soft:#eef3ef; --text:#17201a; --muted:#667067; --line:#dce3dd; --ok:#15915f; --brand:#127c5b; font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", "Microsoft YaHei", sans-serif; }
+    @media (prefers-color-scheme: dark) { :root { --bg:#101411; --panel:#171d19; --soft:#1d2721; --text:#eaf0eb; --muted:#a2aea6; --line:#2c3931; --brand:#4cc49a; } }
+    * { box-sizing: border-box; }
+    body { margin: 0; min-height: 100vh; display: grid; place-items: center; padding: 24px; background: var(--bg); color: var(--text); }
+    main { width: min(760px, 100%); background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: clamp(22px, 5vw, 38px); box-shadow: 0 18px 50px rgba(23,32,26,.10); }
+    a { color: var(--brand); text-decoration: none; font-weight: 700; }
+    a:hover { text-decoration: underline; }
+    .top { display: flex; align-items: center; justify-content: space-between; gap: 14px; flex-wrap: wrap; }
+    .pill { padding: 7px 11px; border-radius: 999px; background: rgba(21,145,95,.12); color: var(--ok); font-weight: 800; font-size: 14px; }
+    h1 { margin: 18px 0 8px; font-size: clamp(30px, 7vw, 54px); line-height: 1; letter-spacing: 0; }
+    p { color: var(--muted); line-height: 1.7; }
+    .grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; margin: 22px 0; }
+    .metric { padding: 14px; border: 1px solid var(--line); border-radius: 8px; background: var(--soft); }
+    .metric span { display: block; color: var(--muted); font-size: 13px; margin-bottom: 5px; }
+    code { word-break: break-all; font-family: ui-monospace, SFMono-Regular, Consolas, "Liberation Mono", monospace; }
+    .actions { display: flex; gap: 12px; flex-wrap: wrap; margin-top: 22px; }
+    .button { display: inline-flex; align-items: center; justify-content: center; min-height: 42px; border-radius: 8px; padding: 0 14px; background: var(--brand); color: white; text-decoration: none; }
+    .button.secondary { background: var(--soft); color: var(--text); border: 1px solid var(--line); }
+    @media (max-width: 620px) { .grid { grid-template-columns: 1fr; } }
+  </style>
+</head>
+<body>
+  <main>
+    <div class="top"><strong>Simple Live Sync</strong><span class="pill">ONLINE</span></div>
+    <h1>服务正常</h1>
+    <p>远程同步 Worker 正在运行。App 使用 <code>/sync</code> WebSocket 端点创建或加入临时同步房间。</p>
+    <div class="grid">
+      <div class="metric"><span>Version</span><code>${escapeHtml(String(payload.version))}</code></div>
+      <div class="metric"><span>Checked At</span><code>${escapeHtml(String(payload.now))}</code></div>
+      <div class="metric"><span>Room TTL</span><code>${ROOM_TTL_MS / 1000} seconds</code></div>
+      <div class="metric"><span>Max Clients</span><code>${MAX_ROOM_CLIENTS}</code></div>
+      <div class="metric"><span>Health JSON</span><code>${escapeHtml(origin)}/health?format=json</code></div>
+      <div class="metric"><span>WebSocket</span><code>${escapeHtml(syncUrl)}</code></div>
+    </div>
+    <div class="actions">
+      <a class="button" href="/">返回首页</a>
+      <a class="button secondary" href="/health?format=json">查看 JSON</a>
+    </div>
+  </main>
+</body>
+</html>`;
+}
+
+function wantsHtml(request: Request, url: URL): boolean {
+  if (url.searchParams.get("format") === "json") {
+    return false;
+  }
+  if (url.searchParams.get("format") === "html") {
+    return true;
+  }
+  return request.headers.get("accept")?.includes("text/html") === true;
 }
 
 function renderAppScript(): string {
