@@ -1,0 +1,7 @@
+node_modules/
+.wrangler/
+.codex/
+dist/
+coverage/
+*.log
+.codex/project-experience.md

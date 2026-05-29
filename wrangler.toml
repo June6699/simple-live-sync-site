@@ -1,0 +1,14 @@
+name = "simple-live-sync"
+main = "src/index.ts"
+compatibility_date = "2026-05-23"
+
+[[durable_objects.bindings]]
+name = "ROOMS"
+class_name = "RoomHub"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["RoomHub"]
+
+[observability.logs]
+enabled = true
