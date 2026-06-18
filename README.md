@@ -46,3 +46,14 @@ After deploy, the public service is expected at:
 - `wss://simple-live-sync.3439394104.workers.dev/sync`
 
 In Simple Live, custom self-hosted endpoints should use the WebSocket URL ending in `/sync`.
+
+## GitHub Auto Deploy
+
+This repository includes a GitHub Actions workflow that deploys the Worker on every push to `master`.
+
+Required GitHub secrets:
+
+- `CLOUDFLARE_API_TOKEN`
+- `CLOUDFLARE_ACCOUNT_ID`
+
+If you update the code locally and push to `master`, GitHub Actions will run `npm run typecheck` and then `npm run deploy`.
