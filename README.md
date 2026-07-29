@@ -1,13 +1,19 @@
-﻿# Simple Live Sync Site
+# Simple Live Sync Site
 
-Cloudflare Worker for the Simple Live remote sync service and status page.
+Shared WebSocket sync service for Simple Live. The same room protocol runs on:
+
+- Node.js at `https://sync.furry.mo.cn` (the app default).
+- Cloudflare Worker at `https://simple-live-sync.3439394104.workers.dev` (the backup).
+
+The deployments are independent and do not share rooms. Every device joining a
+room must select the same sync service.
 
 ## Routes
 
-- `/` - service status page with usage notes, diagnostics, release links, privacy notes, and self-hosting guidance.
+- `/` - service status and diagnostics page.
 - `/health` - JSON health endpoint.
-- `/assets/app.js` - small browser diagnostics script.
-- `/sync` - WebSocket endpoint used by Simple Live. Normal HTTP access returns `websocket upgrade required`.
+- `/assets/app.js` - browser diagnostics.
+- `/sync` - WebSocket endpoint. Normal HTTP returns `websocket upgrade required`.
 
 ## Limits
 
@@ -15,45 +21,49 @@ Cloudflare Worker for the Simple Live remote sync service and status page.
 - Creator disconnect destroys the room.
 - Max clients per room: 8.
 - Max message size: 1 MB.
-- The Worker only relays temporary room data and does not persist follows, history, cookies, or shield words.
+- Room data is held in memory and never persisted.
 
 ## Development
 
 ```bash
 npm install
 npm run typecheck
-npm run dev
+npm test
 ```
 
-Local checks:
+Run the Cloudflare Worker locally:
 
 ```bash
-curl http://127.0.0.1:8787/health
+npm run dev:worker
 ```
 
-Open `http://127.0.0.1:8787/` for the status page.
+Run the Node.js service locally:
 
-## Deploy
+```bash
+npm run dev:node
+```
+
+Then open `http://127.0.0.1:8787/` or check
+`http://127.0.0.1:8787/health`.
+
+## Cloudflare deployment
 
 ```bash
 npm run deploy
 ```
 
-After deploy, the public service is expected at:
+`wrangler.toml` keeps the Worker and Durable Object configuration. Cloudflare
+Git integration may continue deploying the Worker from `master`.
 
-- `https://simple-live-sync.3439394104.workers.dev/`
-- `https://simple-live-sync.3439394104.workers.dev/health`
-- `wss://simple-live-sync.3439394104.workers.dev/sync`
+## Self-hosted deployment
 
-In Simple Live, custom self-hosted endpoints should use the WebSocket URL ending in `/sync`.
+The production server uses Docker Compose in `/opt/simple-live-sync`, exposes
+the container only on `127.0.0.1:8787`, and lets Nginx terminate TLS and proxy
+WebSocket traffic. See `deploy/DEPLOYMENT.md` for deploy, verification, and
+rollback commands.
 
-## GitHub Auto Deploy
+Production endpoints:
 
-This repository includes a GitHub Actions workflow that deploys the Worker on every push to `master`.
-
-Required GitHub secrets:
-
-- `CLOUDFLARE_API_TOKEN`
-- `CLOUDFLARE_ACCOUNT_ID`
-
-If you update the code locally and push to `master`, GitHub Actions will run `npm run typecheck` and then `npm run deploy`.
+- `https://sync.furry.mo.cn/`
+- `https://sync.furry.mo.cn/health`
+- `wss://sync.furry.mo.cn/sync`

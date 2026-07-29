@@ -1,7 +1,5 @@
-import { DurableObject } from "cloudflare:workers";
-
 export interface Env {
-  ROOMS: DurableObjectNamespace<RoomHub>;
+  ROOMS: DurableObjectNamespace;
 }
 
 type ClientInfo = {
@@ -29,12 +27,12 @@ type ClientSession = {
   roomId: string;
 };
 
-const VERSION = "0.1.0";
-const SERVICE_ORIGIN = "https://simple-live-sync.3439394104.workers.dev";
-const ROOM_TTL_MS = 600_000;
-const HEARTBEAT_TIMEOUT_MS = 45_000;
-const MAX_ROOM_CLIENTS = 8;
-const MAX_MESSAGE_BYTES = 1024 * 1024;
+export const VERSION = "0.1.0";
+export const DEFAULT_SERVICE_ORIGIN = "https://sync.furry.mo.cn";
+export const ROOM_TTL_MS = 600_000;
+export const HEARTBEAT_TIMEOUT_MS = 45_000;
+export const MAX_ROOM_CLIENTS = 8;
+export const MAX_MESSAGE_BYTES = 1024 * 1024;
 const ROOM_CODE_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
 
 const SEND_EVENT_BY_ACTION: Record<string, string> = {
@@ -70,30 +68,41 @@ export default {
   }
 };
 
-export class RoomHub extends DurableObject {
+type RoomHubOptions = {
+  roomTtlMs?: number;
+  heartbeatTimeoutMs?: number;
+  sweepIntervalMs?: number;
+  maxRoomClients?: number;
+  maxMessageBytes?: number;
+};
+
+export class RoomHubCore {
   private readonly sessions = new Map<WebSocket, ClientSession>();
   private readonly rooms = new Map<string, Set<WebSocket>>();
   private readonly roomCreators = new Map<string, WebSocket>();
   private readonly roomExpiresAt = new Map<string, number>();
   private readonly lastSeen = new Map<WebSocket, number>();
+  private readonly roomTtlMs: number;
+  private readonly heartbeatTimeoutMs: number;
+  private readonly sweepIntervalMs: number;
+  private readonly maxRoomClients: number;
+  private readonly maxMessageBytes: number;
   private heartbeatTimer?: ReturnType<typeof setInterval>;
 
-  constructor(ctx: DurableObjectState, env: Env) {
-    super(ctx, env);
+  constructor(options: RoomHubOptions = {}) {
+    this.roomTtlMs = options.roomTtlMs ?? ROOM_TTL_MS;
+    this.heartbeatTimeoutMs = options.heartbeatTimeoutMs ?? HEARTBEAT_TIMEOUT_MS;
+    this.sweepIntervalMs = options.sweepIntervalMs ?? 10_000;
+    this.maxRoomClients = options.maxRoomClients ?? MAX_ROOM_CLIENTS;
+    this.maxMessageBytes = options.maxMessageBytes ?? MAX_MESSAGE_BYTES;
   }
 
-  async fetch(request: Request): Promise<Response> {
-    const pair = new WebSocketPair();
-    const client = pair[0];
-    const server = pair[1];
-    server.accept();
-    this.attachSocket(server);
-    return new Response(null, { status: 101, webSocket: client });
-  }
-
-  private attachSocket(socket: WebSocket): void {
+  attachSocket(socket: WebSocket, attachEventListeners = true): void {
     this.lastSeen.set(socket, Date.now());
     this.ensureHeartbeat();
+    if (!attachEventListeners) {
+      return;
+    }
     socket.addEventListener("message", (event) => {
       this.handleSocketMessage(socket, event.data).catch((error) => {
         this.sendError(socket, undefined, "serverError", stringifyError(error));
@@ -103,12 +112,12 @@ export class RoomHub extends DurableObject {
     socket.addEventListener("error", () => this.removeSocket(socket));
   }
 
-  private async handleSocketMessage(socket: WebSocket, raw: unknown): Promise<void> {
+  async handleSocketMessage(socket: WebSocket, raw: unknown): Promise<void> {
     if (typeof raw !== "string") {
       this.sendError(socket, undefined, "invalidMessage", "message must be text");
       return;
     }
-    if (new TextEncoder().encode(raw).byteLength > MAX_MESSAGE_BYTES) {
+    if (new TextEncoder().encode(raw).byteLength > this.maxMessageBytes) {
       this.sendError(socket, undefined, "payloadTooLarge", "message is larger than 1 MB");
       return;
     }
@@ -155,13 +164,13 @@ export class RoomHub extends DurableObject {
     const user = this.createRoomUser(info, true);
     this.rooms.set(roomId, new Set([socket]));
     this.roomCreators.set(roomId, socket);
-    this.roomExpiresAt.set(roomId, Date.now() + ROOM_TTL_MS);
+    this.roomExpiresAt.set(roomId, Date.now() + this.roomTtlMs);
     this.sessions.set(socket, { socket, user, roomId });
     this.send(socket, {
       type: "roomCreated",
       requestId: message.requestId,
       roomId,
-      expiresIn: Math.floor(ROOM_TTL_MS / 1000),
+      expiresIn: Math.floor(this.roomTtlMs / 1000),
       user
     });
     this.broadcastUserUpdated(roomId);
@@ -184,7 +193,7 @@ export class RoomHub extends DurableObject {
       return;
     }
     const room = this.rooms.get(roomId)!;
-    if (room.size >= MAX_ROOM_CLIENTS) {
+    if (room.size >= this.maxRoomClients) {
       this.sendError(socket, message.requestId, "roomFull", "room is full");
       return;
     }
@@ -243,7 +252,7 @@ export class RoomHub extends DurableObject {
     });
   }
 
-  private removeSocket(socket: WebSocket, notify = true): void {
+  removeSocket(socket: WebSocket, notify = true): void {
     const roomId = this.findRoomBySocket(socket);
     this.sessions.delete(socket);
     this.lastSeen.delete(socket);
@@ -311,7 +320,7 @@ export class RoomHub extends DurableObject {
     this.heartbeatTimer = setInterval(() => {
       const now = Date.now();
       for (const [socket, lastSeenAt] of this.lastSeen.entries()) {
-        if (now - lastSeenAt > HEARTBEAT_TIMEOUT_MS) {
+        if (now - lastSeenAt > this.heartbeatTimeoutMs) {
           this.send(socket, { type: "roomDestroyed", reason: "heartbeatTimeout" });
           this.safeClose(socket, 1001, "heartbeat timeout");
           this.removeSocket(socket);
@@ -322,11 +331,11 @@ export class RoomHub extends DurableObject {
           this.destroyRoom(roomId, "expired");
         }
       }
-      if (this.sessions.size === 0 && this.heartbeatTimer) {
+      if (this.lastSeen.size === 0 && this.heartbeatTimer) {
         clearInterval(this.heartbeatTimer);
         this.heartbeatTimer = undefined;
       }
-    }, 10_000);
+    }, this.sweepIntervalMs);
   }
 
   private isRoomExpired(roomId: string): boolean {
@@ -392,9 +401,38 @@ export class RoomHub extends DurableObject {
       // ignored
     }
   }
+
+  dispose(reason = "serverShutdown"): void {
+    if (this.heartbeatTimer) {
+      clearInterval(this.heartbeatTimer);
+      this.heartbeatTimer = undefined;
+    }
+    for (const socket of [...this.lastSeen.keys()]) {
+      this.send(socket, { type: "roomDestroyed", reason });
+      this.safeClose(socket, 1001, "server shutdown");
+    }
+    this.sessions.clear();
+    this.rooms.clear();
+    this.roomCreators.clear();
+    this.roomExpiresAt.clear();
+    this.lastSeen.clear();
+  }
 }
 
-function buildHealthPayload(): Record<string, unknown> {
+export class RoomHub {
+  private readonly core = new RoomHubCore();
+
+  async fetch(_request: Request): Promise<Response> {
+    const pair = new WebSocketPair();
+    const client = pair[0];
+    const server = pair[1];
+    server.accept();
+    this.core.attachSocket(server);
+    return new Response(null, { status: 101, webSocket: client });
+  }
+}
+
+export function buildHealthPayload(): Record<string, unknown> {
   return {
     status: true,
     message: "simple live sync server is running",
@@ -432,9 +470,9 @@ function javascript(body: string): Response {
   });
 }
 
-function renderHomePage(origin: string): string {
+export function renderHomePage(origin: string): string {
   const syncUrl = `${origin.replace(/^http/, "ws")}/sync`;
-  const canonicalSyncUrl = `${SERVICE_ORIGIN.replace(/^http/, "ws")}/sync`;
+  const canonicalSyncUrl = `${DEFAULT_SERVICE_ORIGIN.replace(/^http/, "ws")}/sync`;
   return `<!doctype html>
 <html lang="zh-CN">
 <head>
@@ -570,7 +608,7 @@ function renderHomePage(origin: string): string {
         <article class="card">
           <h2>常见失败原因</h2>
           <ul>
-            <li>网络无法访问 workers.dev。</li>
+            <li>网络无法访问所选同步服务。</li>
             <li>代理或防火墙拦截 WebSocket。</li>
             <li>房间已过期或创建者已离开。</li>
           </ul>
@@ -581,27 +619,27 @@ function renderHomePage(origin: string): string {
         </article>
         <article class="card">
           <h2>自建服务</h2>
-          <p>Fork Worker 仓库后执行 <code>npm install</code>、<code>npm run typecheck</code>、<code>npm run deploy</code>。部署完成后，在 App 的“其他设置 -> 同步服务地址”填写自己的 <code>wss://.../sync</code>。</p>
+          <p>该仓库同时支持 Cloudflare Worker 和 Node.js 自建部署。部署完成后，在 App 的同步服务设置中填写自己的 <code>wss://.../sync</code>。</p>
         </article>
       </section>
 
       <section class="card">
         <h2>下载</h2>
         <div class="downloads">
-          <a class="download" href="https://github.com/June6699/dart_simple_live/releases/tag/v1.12.5-fix"><strong>Simple Live v1.12.5-fix</strong><span>Android / Windows / Linux</span></a>
-          <a class="download" href="https://github.com/June6699/dart_simple_live/releases/tag/tv_v1.7.6"><strong>Simple Live TV tv_1.7.6</strong><span>Android TV APK</span></a>
+          <a class="download" href="https://github.com/June6699/dart_simple_live/releases/tag/v1.12.7"><strong>Simple Live v1.12.7</strong><span>Android / Windows / Linux</span></a>
+          <a class="download" href="https://github.com/June6699/dart_simple_live/releases/tag/tv_v1.7.8"><strong>Simple Live TV tv_v1.7.8</strong><span>Android TV APK</span></a>
         </div>
       </section>
     </main>
 
-    <footer>Simple Live Sync Worker · Version ${escapeHtml(VERSION)} · <a href="https://github.com/June6699/dart_simple_live">GitHub</a></footer>
+    <footer>Simple Live Sync · Version ${escapeHtml(VERSION)} · <a href="https://github.com/June6699/dart_simple_live">GitHub</a></footer>
   </div>
   <script src="/assets/app.js" defer></script>
 </body>
 </html>`;
 }
 
-function renderHealthPage(origin: string): string {
+export function renderHealthPage(origin: string): string {
   const payload = buildHealthPayload();
   const syncUrl = `${origin.replace(/^http/, "ws")}/sync`;
   return `<!doctype html>
@@ -636,7 +674,7 @@ function renderHealthPage(origin: string): string {
   <main>
     <div class="top"><strong>Simple Live Sync</strong><span class="pill">ONLINE</span></div>
     <h1>服务正常</h1>
-    <p>远程同步 Worker 正在运行。App 使用 <code>/sync</code> WebSocket 端点创建或加入临时同步房间。</p>
+    <p>远程同步服务正在运行。App 使用 <code>/sync</code> WebSocket 端点创建或加入临时同步房间。</p>
     <div class="grid">
       <div class="metric"><span>Version</span><code>${escapeHtml(String(payload.version))}</code></div>
       <div class="metric"><span>Checked At</span><code>${escapeHtml(String(payload.now))}</code></div>
@@ -664,7 +702,7 @@ function wantsHtml(request: Request, url: URL): boolean {
   return request.headers.get("accept")?.includes("text/html") === true;
 }
 
-function renderAppScript(): string {
+export function renderAppScript(): string {
   return `const button = document.getElementById("run-check");
 const output = document.getElementById("diag-output");
 const pill = document.getElementById("status-pill");

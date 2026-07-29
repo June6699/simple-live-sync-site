@@ -1,4 +1,4 @@
-name: Check Worker
+name: Check Sync Services
 
 on:
   push:
@@ -26,6 +26,12 @@ jobs:
 
       - name: Typecheck
         run: npm run typecheck
+
+      - name: Test
+        run: npm test
+
+      - name: Build Node server
+        run: npm run build:node
 
       - name: Confirm Cloudflare deploy is handled by Git integration
         run: echo "Cloudflare Git integration is responsible for deployment."

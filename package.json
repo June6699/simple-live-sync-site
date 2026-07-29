@@ -4,14 +4,24 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "wrangler dev",
+    "dev": "npm run dev:worker",
+    "dev:worker": "wrangler dev",
+    "dev:node": "tsx watch src/server.ts",
+    "build:node": "tsc -p tsconfig.build.json",
+    "start:node": "node dist/server.js",
     "deploy": "wrangler deploy",
     "typecheck": "tsc --noEmit",
     "test": "vitest run"
   },
+  "dependencies": {
+    "ws": "^8.18.3"
+  },
   "devDependencies": {
     "@cloudflare/vitest-pool-workers": "^0.8.69",
     "@cloudflare/workers-types": "^4.20260522.0",
+    "@types/node": "^24.10.1",
+    "@types/ws": "^8.18.1",
+    "tsx": "^4.21.0",
     "typescript": "^5.9.3",
     "vitest": "^3.2.4",
     "wrangler": "^4.50.0"
