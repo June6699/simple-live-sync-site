@@ -78,6 +78,14 @@ describe("stats API payloads", () => {
         countries: [{ countryCode: "DE", calls: 1, uniqueVisitors: 1 }]
       })
     );
+
+    const availability = queryStatsApi(
+      store,
+      new URL("https://example.test/api/stats/availability?range=24h"),
+      target,
+      now
+    );
+    expect(availability.status).toBe(200);
   });
 
   it("rejects unsupported ranges and query parameters", () => {

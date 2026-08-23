@@ -26,7 +26,7 @@ echarts.use([
   VisualMapContinuousComponent
 ]);
 
-type RangeKey = "3h" | "24h" | "7d" | "30d" | "90d" | "all";
+type RangeKey = "24h" | "7d" | "30d" | "90d" | "all";
 type MapMetric = "uniqueVisitors" | "calls";
 type MapLevel = "world" | "china";
 type AvailabilityStatus = "up" | "degraded" | "down" | "pending";
@@ -119,7 +119,6 @@ const EVENT_META: Record<EventKey, { label: string; color: string; aliases: stri
 };
 
 const RANGE_LABELS: Record<RangeKey, string> = {
-  "3h": "近 3 小时",
   "24h": "近 24 小时",
   "7d": "近 7 天",
   "30d": "近 30 天",
@@ -234,7 +233,7 @@ const reducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)");
 const darkMode = window.matchMedia("(prefers-color-scheme: dark)");
 
 const state = {
-  range: "3h" as RangeKey,
+  range: "24h" as RangeKey,
   mapMetric: "uniqueVisitors" as MapMetric,
   mapLevel: "world" as MapLevel,
   timeline: [] as TimelineBucket[],
@@ -373,7 +372,7 @@ function formatAxisTime(value: string, range: RangeKey): string {
   if (!date) {
     return value;
   }
-  if (range === "3h" || range === "24h") {
+  if (range === "24h") {
     return new Intl.DateTimeFormat("zh-CN", { timeZone: "UTC", hour: "2-digit", minute: "2-digit", hourCycle: "h23" }).format(date);
   }
   return new Intl.DateTimeFormat("zh-CN", { timeZone: "UTC", month: "2-digit", day: "2-digit" }).format(date);
@@ -714,7 +713,7 @@ function renderTimeline(): void {
   const total = totals.reduce((sum, value) => sum + value, 0);
   const peak = Math.max(...totals);
   const peakIndex = totals.indexOf(peak);
-  const granularity = state.range === "3h" ? "5 分钟" : state.range === "24h" ? "小时" : state.range === "all" ? "日" : "小时 / 日";
+  const granularity = state.range === "24h" ? "小时" : state.range === "all" ? "日" : "小时 / 日";
   byId("timeline-granularity").textContent = `${RANGE_LABELS[state.range]} · UTC ${granularity}桶`;
   byId("timeline-summary").textContent = `${RANGE_LABELS[state.range]}共有 ${formatInteger(total)} 次成功调用，峰值为 ${formatInteger(peak)} 次，出现在 ${formatUtcTime(state.timeline[peakIndex]?.time ?? "")}。`;
   chart.setOption({
