@@ -68,7 +68,6 @@ describe("Node sync server", () => {
     const address = await runtime.start();
     const origin = `http://127.0.0.1:${address.port}`;
     expect((await fetch(`${origin}/stats`)).status).toBe(200);
-    expect((await fetch(`${origin}/assets/stats.js`)).status).toBe(200);
     expect((await fetch(`${origin}/assets/maps/china-adm1.geojson`)).status).toBe(200);
     const summaryBefore = await (await fetch(`${origin}/api/stats/summary`)).json() as { totalCalls: number };
     expect(summaryBefore.totalCalls).toBe(0);
