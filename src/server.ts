@@ -1,4 +1,7 @@
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
+import { createHmac } from "node:crypto";
+import { existsSync, readFileSync } from "node:fs";
+import { join, normalize, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 
 import { WebSocket as NodeWebSocket, WebSocketServer } from "ws";
@@ -12,11 +15,19 @@ import {
   renderHomePage,
   RoomHubCore
 } from "./index.js";
+import { createFailOpenMetricsSink, normalizeCountryCode, normalizeRegionCode, type ConnectionContext } from "./metrics.js";
+import { NodeMetricsService } from "./metrics-node.js";
+import { isStatsApiPath, queryStatsApi, STATS_CACHE_CONTROL } from "./stats-api.js";
 
 export type SyncServerOptions = {
   host?: string;
   port?: number;
   publicOrigin?: string;
+  metricsEnabled?: boolean;
+  metricsDbPath?: string;
+  ipHashSecret?: string;
+  publicDirectory?: string;
+  metricsService?: NodeMetricsService;
 };
 
 export type SyncServerRuntime = {
@@ -28,7 +39,18 @@ export function createSyncServer(options: SyncServerOptions = {}): SyncServerRun
   const host = options.host ?? "127.0.0.1";
   const port = options.port ?? 8787;
   const publicOrigin = normalizeOrigin(options.publicOrigin ?? DEFAULT_SERVICE_ORIGIN);
-  const hub = new RoomHubCore();
+  const metricsEnabled = options.metricsEnabled ?? process.env.METRICS_ENABLED === "true";
+  const metricsService = options.metricsService ?? (metricsEnabled
+    ? new NodeMetricsService({
+        path: options.metricsDbPath ?? process.env.METRICS_DB_PATH ?? "/var/lib/simple-live-sync/metrics.sqlite",
+        onError: (error) => console.error("Metrics write failed", safeError(error))
+      })
+    : undefined);
+  const metricsSink = metricsService ? createFailOpenMetricsSink(metricsService) : undefined;
+  const publicDirectory = resolve(options.publicDirectory ?? join(process.cwd(), "public"));
+  const ipHashSecret = options.ipHashSecret ?? process.env.IP_HASH_SECRET ?? "";
+  let probeTimer: ReturnType<typeof setTimeout> | undefined;
+  const hub = new RoomHubCore({ metricsSink });
   const webSocketServer = new WebSocketServer({
     noServer: true,
     maxPayload: MAX_MESSAGE_BYTES * 2,
@@ -36,7 +58,7 @@ export function createSyncServer(options: SyncServerOptions = {}): SyncServerRun
   });
 
   const httpServer = createServer((request, response) => {
-    handleHttpRequest(request, response, publicOrigin);
+    handleHttpRequest(request, response, publicOrigin, publicDirectory, metricsService, metricsEnabled);
   });
 
   httpServer.on("upgrade", (request, socket, head) => {
@@ -51,9 +73,9 @@ export function createSyncServer(options: SyncServerOptions = {}): SyncServerRun
     });
   });
 
-  webSocketServer.on("connection", (webSocket) => {
+  webSocketServer.on("connection", (webSocket, request) => {
     const socket = webSocket as unknown as WebSocket;
-    hub.attachSocket(socket, false);
+    hub.attachSocket(socket, false, resolveNodeConnectionContext(request, ipHashSecret));
     webSocket.on("message", (data, isBinary) => {
       const raw = isBinary ? data : data.toString("utf8");
       hub.handleSocketMessage(socket, raw).catch((error) => {
@@ -76,11 +98,18 @@ export function createSyncServer(options: SyncServerOptions = {}): SyncServerRun
             reject(new Error("server did not expose a TCP address"));
             return;
           }
+          if (metricsService) {
+            probeTimer = scheduleNodeAvailabilityProbe(metricsService, publicOrigin);
+          }
           resolve({ host, port: address.port });
         });
       });
     },
     async stop() {
+      if (probeTimer) {
+        clearTimeout(probeTimer);
+        probeTimer = undefined;
+      }
       hub.dispose();
       for (const client of webSocketServer.clients) {
         if (client.readyState === NodeWebSocket.OPEN) {
@@ -93,6 +122,7 @@ export function createSyncServer(options: SyncServerOptions = {}): SyncServerRun
           httpServer.close((error) => (error ? reject(error) : resolve()));
         })
       ]);
+      metricsService?.close();
     }
   };
 }
@@ -100,7 +130,10 @@ export function createSyncServer(options: SyncServerOptions = {}): SyncServerRun
 function handleHttpRequest(
   request: IncomingMessage,
   response: ServerResponse,
-  publicOrigin: string
+  publicOrigin: string,
+  publicDirectory: string,
+  metricsService: NodeMetricsService | undefined,
+  metricsEnabled: boolean
 ): void {
   const url = new URL(request.url ?? "/", publicOrigin);
   if (url.pathname === "/") {
@@ -115,6 +148,28 @@ function handleHttpRequest(
       renderAppScript(),
       true
     );
+    return;
+  }
+  if (url.pathname === "/stats" || url.pathname === "/stats/") {
+    sendStaticFile(response, publicDirectory, "stats.html", "text/html; charset=utf-8");
+    return;
+  }
+  if (url.pathname === "/stats.html") {
+    sendStaticFile(response, publicDirectory, "stats.html", "text/html; charset=utf-8");
+    return;
+  }
+  if (url.pathname.startsWith("/assets/")) {
+    const relative = url.pathname.slice("/assets/".length);
+    if (!isSafeStaticPath(relative)) {
+      sendJson(response, 404, { status: false, message: "not found" });
+      return;
+    }
+    const contentType = contentTypeFor(relative);
+    if (!contentType) {
+      sendJson(response, 404, { status: false, message: "not found" });
+      return;
+    }
+    sendStaticFile(response, join(publicDirectory, "assets"), relative, contentType);
     return;
   }
   if (url.pathname === "/health") {
@@ -135,6 +190,20 @@ function handleHttpRequest(
     sendJson(response, 200, buildHealthPayload());
     return;
   }
+  if (isStatsApiPath(url.pathname)) {
+    if (!metricsEnabled || !metricsService) {
+      sendJson(response, 503, { status: false, message: "statistics are temporarily unavailable" }, STATS_CACHE_CONTROL);
+      return;
+    }
+    try {
+      const result = queryStatsApi(metricsService.store, url, publicOrigin);
+      sendJson(response, result.status, result.payload, result.status === 200 ? STATS_CACHE_CONTROL : "no-store");
+    } catch (error) {
+      console.error("Stats API failed", safeError(error));
+      sendJson(response, 503, { status: false, message: "statistics are temporarily unavailable" }, STATS_CACHE_CONTROL);
+    }
+    return;
+  }
   if (url.pathname === "/sync") {
     sendJson(response, 426, { status: false, message: "websocket upgrade required" });
     return;
@@ -147,23 +216,28 @@ function sendText(
   status: number,
   contentType: string,
   body: string,
-  cacheable: boolean
+  cacheControl: boolean | string
 ): void {
+  const resolvedCacheControl = typeof cacheControl === "string"
+    ? cacheControl
+    : cacheControl
+      ? "public, max-age=120"
+      : "no-store";
   response.writeHead(status, {
     "content-type": contentType,
-    "cache-control": cacheable ? "public, max-age=120" : "no-store",
+    "cache-control": resolvedCacheControl,
     "content-length": Buffer.byteLength(body)
   });
   response.end(body);
 }
 
-function sendJson(response: ServerResponse, status: number, payload: unknown): void {
+function sendJson(response: ServerResponse, status: number, payload: unknown, cacheControl = "no-store"): void {
   sendText(
     response,
     status,
     "application/json; charset=utf-8",
     JSON.stringify(payload),
-    false
+    cacheControl
   );
 }
 
@@ -178,6 +252,162 @@ function normalizeOrigin(value: string): string {
 
 function safeError(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+function resolveNodeConnectionContext(
+  request: IncomingMessage,
+  ipHashSecret: string
+): ConnectionContext {
+  const remoteAddress = normalizeIp(request.socket.remoteAddress);
+  if (!remoteAddress || !isLoopbackAddress(remoteAddress)) {
+    return { source: "node", countryCode: "ZZ", regionCode: "", isProbe: false };
+  }
+  const ip = normalizeIp(request.headers["x-real-ip"]?.toString());
+  const countryCode = normalizeCountryCode(request.headers["x-geo-country"]);
+  const regionCode = normalizeRegionCode(request.headers["x-geo-region"]);
+  return {
+    source: "node",
+    countryCode,
+    regionCode,
+    visitorHash: ip && ipHashSecret ? createHmac("sha256", ipHashSecret).update(ip).digest("hex") : undefined,
+    isProbe: false
+  };
+}
+
+function normalizeIp(value: string | undefined): string | undefined {
+  const normalized = value?.trim().replace(/^\[|\]$/g, "");
+  if (!normalized || normalized.includes(",") || normalized.includes(" ")) {
+    return undefined;
+  }
+  if (normalized.startsWith("::ffff:")) {
+    return normalized.slice(7);
+  }
+  return normalized;
+}
+
+function isLoopbackAddress(address: string): boolean {
+  return address === "127.0.0.1" || address === "::1" || address.startsWith("127.");
+}
+
+function isSafeStaticPath(relativePath: string): boolean {
+  if (!relativePath || relativePath.includes("\\") || relativePath.includes("\0")) {
+    return false;
+  }
+  const parts = relativePath.split("/");
+  return parts.every((part) => part.length > 0 && part !== "." && part !== "..");
+}
+
+function contentTypeFor(relativePath: string): string | undefined {
+  const extension = relativePath.toLowerCase().slice(relativePath.lastIndexOf("."));
+  return {
+    ".js": "application/javascript; charset=utf-8",
+    ".css": "text/css; charset=utf-8",
+    ".json": "application/json; charset=utf-8",
+    ".geojson": "application/geo+json; charset=utf-8",
+    ".md": "text/markdown; charset=utf-8",
+    ".map": "application/json; charset=utf-8"
+  }[extension];
+}
+
+function sendStaticFile(
+  response: ServerResponse,
+  rootDirectory: string,
+  relativePath: string,
+  contentType: string
+): void {
+  const filePath = resolve(rootDirectory, relativePath);
+  const root = resolve(rootDirectory);
+  if (!filePath.startsWith(`${root}${process.platform === "win32" ? "\\" : "/"}`) || !existsSync(filePath)) {
+    sendJson(response, 404, { status: false, message: "not found" });
+    return;
+  }
+  try {
+    const body = readFileSync(filePath);
+    response.writeHead(200, {
+      "content-type": contentType,
+      "cache-control": relativePath.endsWith(".html") ? "public, max-age=120" : "public, max-age=300",
+      "content-length": body.byteLength
+    });
+    response.end(body);
+  } catch {
+    sendJson(response, 404, { status: false, message: "not found" });
+  }
+}
+
+function scheduleNodeAvailabilityProbe(
+  metricsService: NodeMetricsService,
+  publicOrigin: string
+): ReturnType<typeof setTimeout> {
+  const now = new Date();
+  const next = new Date(now);
+  next.setUTCMinutes(5, 0, 0);
+  if (next.getTime() <= now.getTime()) {
+    next.setUTCHours(next.getUTCHours() + 1);
+  }
+  const timer = setTimeout(async () => {
+    try {
+      const event = await runNodeAvailabilityProbe(publicOrigin);
+      metricsService.record(event, { source: "node", countryCode: "ZZ", regionCode: "", isProbe: true }, Date.now());
+    } catch (error) {
+      console.error("Node availability probe failed", safeError(error));
+    }
+    scheduleNodeAvailabilityProbe(metricsService, publicOrigin);
+  }, Math.max(1, next.getTime() - now.getTime()));
+  timer.unref?.();
+  return timer;
+}
+
+async function runNodeAvailabilityProbe(publicOrigin: string) {
+  const startedAt = Date.now();
+  let httpOk = false;
+  let websocketOk = false;
+  let httpLatencyMs: number | undefined;
+  let websocketLatencyMs: number | undefined;
+  let errorCode = "";
+  try {
+    const response = await fetch(`${publicOrigin}/health?format=json`, { signal: AbortSignal.timeout(10_000) });
+    const body = (await response.json()) as { status?: unknown };
+    httpOk = response.ok && body.status === true;
+    httpLatencyMs = Date.now() - startedAt;
+    if (!httpOk) errorCode += `http:${response.status};`;
+  } catch (error) {
+    errorCode += `http:${safeError(error).slice(0, 40)};`;
+  }
+  try {
+    const { WebSocket } = await import("ws");
+    websocketOk = await new Promise<boolean>((resolve) => {
+      const socket = new WebSocket(publicOrigin.replace(/^http/, "ws") + "/sync");
+      const requestId = `availability-${Date.now()}`;
+      const timer = setTimeout(() => { socket.terminate(); resolve(false); }, 10_000);
+      const started = Date.now();
+      socket.once("open", () => socket.send(JSON.stringify({ type: "ping", requestId })));
+      socket.once("message", (data) => {
+        clearTimeout(timer);
+        try {
+          const payload = JSON.parse(data.toString("utf8"));
+          websocketOk = payload.type === "pong" && payload.requestId === requestId;
+          websocketLatencyMs = Date.now() - started;
+        } catch {
+          websocketOk = false;
+        }
+        socket.close();
+        resolve(websocketOk);
+      });
+      socket.once("error", () => { clearTimeout(timer); resolve(false); });
+    });
+    if (!websocketOk) errorCode += "ws:failed;";
+  } catch (error) {
+    errorCode += `ws:${safeError(error).slice(0, 40)};`;
+  }
+  return {
+    type: "availability_check" as const,
+    target: publicOrigin,
+    httpOk,
+    websocketOk,
+    httpLatencyMs,
+    websocketLatencyMs,
+    errorCode: errorCode.slice(0, 80) || undefined
+  };
 }
 
 function readPort(value: string | undefined): number {

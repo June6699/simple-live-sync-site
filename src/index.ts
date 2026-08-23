@@ -1,5 +1,24 @@
+import { DurableObjectSqlAdapter } from "./metrics-cloudflare.js";
+import {
+  createFailOpenMetricsSink,
+  createMetricRecord,
+  normalizeCountryCode,
+  normalizeRegionCode,
+  type ConnectionContext,
+  type MetricsEvent,
+  type MetricsSink,
+  type UsageMetricEventType
+} from "./metrics.js";
+import { SqlMetricsStore } from "./metrics-store.js";
+import { isStatsApiPath, queryStatsApi, STATS_CACHE_CONTROL } from "./stats-api.js";
+
 export interface Env {
   ROOMS: DurableObjectNamespace;
+  METRICS: DurableObjectNamespace;
+  ASSETS: Fetcher;
+  IP_HASH_SECRET?: string;
+  SELF_ORIGIN?: string;
+  METRICS_ENABLED?: string;
 }
 
 type ClientInfo = {
@@ -42,14 +61,31 @@ const SEND_EVENT_BY_ACTION: Record<string, string> = {
   sendBiliAccount: "biliAccountReceived"
 };
 
+const METRIC_EVENT_BY_ACTION: Record<string, UsageMetricEventType> = {
+  sendFavorite: "send_favorite",
+  sendHistory: "send_history",
+  sendShieldWord: "send_shield_word",
+  sendBiliAccount: "send_bili_account"
+};
+
+const INTERNAL_VISITOR_HEADER = "x-simple-live-visitor";
+const INTERNAL_COUNTRY_HEADER = "x-simple-live-country";
+const INTERNAL_REGION_HEADER = "x-simple-live-region";
+
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
     const url = new URL(request.url);
     if (url.pathname === "/") {
       return html(renderHomePage(url.origin));
     }
+    if (url.pathname === "/stats" || url.pathname === "/stats/") {
+      return env.ASSETS.fetch(assetRequest(request, "/stats.html"));
+    }
     if (url.pathname === "/assets/app.js") {
       return javascript(renderAppScript());
+    }
+    if (url.pathname.startsWith("/assets/")) {
+      return env.ASSETS.fetch(request);
     }
     if (url.pathname === "/health") {
       if (wantsHtml(request, url)) {
@@ -57,14 +93,47 @@ export default {
       }
       return json(buildHealthPayload());
     }
+    if (isStatsApiPath(url.pathname)) {
+      try {
+        return await metricsStub(env).fetch(request);
+      } catch (error) {
+        console.error("Metrics API unavailable", stringifyError(error));
+        return json(
+          { status: false, message: "statistics are temporarily unavailable" },
+          503,
+          STATS_CACHE_CONTROL
+        );
+      }
+    }
     if (url.pathname !== "/sync") {
       return json({ status: false, message: "not found" }, 404);
     }
     if (request.headers.get("Upgrade")?.toLowerCase() !== "websocket") {
       return json({ status: false, message: "websocket upgrade required" }, 426);
     }
+    const context = await cloudflareConnectionContext(request, env);
+    const headers = new Headers(request.headers);
+    headers.delete(INTERNAL_VISITOR_HEADER);
+    headers.set(INTERNAL_COUNTRY_HEADER, context.countryCode ?? "ZZ");
+    headers.set(INTERNAL_REGION_HEADER, context.regionCode ?? "");
+    if (context.visitorHash) {
+      headers.set(INTERNAL_VISITOR_HEADER, context.visitorHash);
+    }
     const id = env.ROOMS.idFromName("global-room-hub");
-    return env.ROOMS.get(id).fetch(request);
+    return env.ROOMS.get(id).fetch(new Request(request, { headers }));
+  },
+
+  async scheduled(_controller: ScheduledController, env: Env, ctx: ExecutionContext): Promise<void> {
+    ctx.waitUntil(
+      metricsStub(env)
+        .fetch("https://metrics.internal/internal/probe", { method: "POST" })
+        .then((response) => {
+          if (!response.ok) {
+            throw new Error(`availability probe returned ${response.status}`);
+          }
+        })
+        .catch((error) => console.error("Availability probe failed", stringifyError(error)))
+    );
   }
 };
 
@@ -74,6 +143,7 @@ type RoomHubOptions = {
   sweepIntervalMs?: number;
   maxRoomClients?: number;
   maxMessageBytes?: number;
+  metricsSink?: MetricsSink;
 };
 
 export class RoomHubCore {
@@ -82,11 +152,13 @@ export class RoomHubCore {
   private readonly roomCreators = new Map<string, WebSocket>();
   private readonly roomExpiresAt = new Map<string, number>();
   private readonly lastSeen = new Map<WebSocket, number>();
+  private readonly connectionContexts = new Map<WebSocket, ConnectionContext>();
   private readonly roomTtlMs: number;
   private readonly heartbeatTimeoutMs: number;
   private readonly sweepIntervalMs: number;
   private readonly maxRoomClients: number;
   private readonly maxMessageBytes: number;
+  private readonly metricsSink: MetricsSink;
   private heartbeatTimer?: ReturnType<typeof setInterval>;
 
   constructor(options: RoomHubOptions = {}) {
@@ -95,10 +167,16 @@ export class RoomHubCore {
     this.sweepIntervalMs = options.sweepIntervalMs ?? 10_000;
     this.maxRoomClients = options.maxRoomClients ?? MAX_ROOM_CLIENTS;
     this.maxMessageBytes = options.maxMessageBytes ?? MAX_MESSAGE_BYTES;
+    this.metricsSink = createFailOpenMetricsSink(options.metricsSink ?? { record() {} });
   }
 
-  attachSocket(socket: WebSocket, attachEventListeners = true): void {
+  attachSocket(
+    socket: WebSocket,
+    attachEventListeners = true,
+    connectionContext: ConnectionContext = {}
+  ): void {
     this.lastSeen.set(socket, Date.now());
+    this.connectionContexts.set(socket, connectionContext);
     this.ensureHeartbeat();
     if (!attachEventListeners) {
       return;
@@ -159,7 +237,12 @@ export class RoomHubCore {
       this.sendError(socket, message.requestId, "invalidClient", "client info is invalid");
       return;
     }
+    const connectionContext = this.connectionContexts.get(socket);
     this.removeSocket(socket, false);
+    this.lastSeen.set(socket, Date.now());
+    if (connectionContext) {
+      this.connectionContexts.set(socket, connectionContext);
+    }
     const roomId = this.generateRoomId();
     const user = this.createRoomUser(info, true);
     this.rooms.set(roomId, new Set([socket]));
@@ -174,6 +257,7 @@ export class RoomHubCore {
       user
     });
     this.broadcastUserUpdated(roomId);
+    this.recordMetric(socket, "room_created");
   }
 
   private joinRoom(socket: WebSocket, message: SyncRequest): void {
@@ -197,7 +281,12 @@ export class RoomHubCore {
       this.sendError(socket, message.requestId, "roomFull", "room is full");
       return;
     }
+    const connectionContext = this.connectionContexts.get(socket);
     this.removeSocket(socket, false);
+    this.lastSeen.set(socket, Date.now());
+    if (connectionContext) {
+      this.connectionContexts.set(socket, connectionContext);
+    }
     const user = this.createRoomUser(info, false);
     room.add(socket);
     this.sessions.set(socket, { socket, user, roomId });
@@ -209,6 +298,7 @@ export class RoomHubCore {
       user
     });
     this.broadcastUserUpdated(roomId);
+    this.recordMetric(socket, "room_joined");
   }
 
   private forwardContent(socket: WebSocket, message: SyncRequest, action: string): void {
@@ -250,12 +340,14 @@ export class RoomHubCore {
       action,
       roomId
     });
+    this.recordMetric(socket, METRIC_EVENT_BY_ACTION[action]);
   }
 
   removeSocket(socket: WebSocket, notify = true): void {
     const roomId = this.findRoomBySocket(socket);
     this.sessions.delete(socket);
     this.lastSeen.delete(socket);
+    this.connectionContexts.delete(socket);
     if (!roomId) {
       return;
     }
@@ -286,6 +378,7 @@ export class RoomHubCore {
       this.send(socket, { type: "roomDestroyed", roomId, reason });
       this.sessions.delete(socket);
       this.lastSeen.delete(socket);
+      this.connectionContexts.delete(socket);
     }
     this.rooms.delete(roomId);
     this.roomCreators.delete(roomId);
@@ -402,6 +495,14 @@ export class RoomHubCore {
     }
   }
 
+  private recordMetric(socket: WebSocket, type: UsageMetricEventType): void {
+    this.metricsSink.record(
+      { type },
+      this.connectionContexts.get(socket) ?? {},
+      Date.now()
+    );
+  }
+
   dispose(reason = "serverShutdown"): void {
     if (this.heartbeatTimer) {
       clearInterval(this.heartbeatTimer);
@@ -416,19 +517,139 @@ export class RoomHubCore {
     this.roomCreators.clear();
     this.roomExpiresAt.clear();
     this.lastSeen.clear();
+    this.connectionContexts.clear();
   }
 }
 
 export class RoomHub {
-  private readonly core = new RoomHubCore();
+  private readonly core: RoomHubCore;
 
-  async fetch(_request: Request): Promise<Response> {
+  constructor(state: DurableObjectState, env: Env) {
+    this.core = new RoomHubCore({
+      metricsSink: new CloudflareMetricsSink(state, env)
+    });
+  }
+
+  async fetch(request: Request): Promise<Response> {
     const pair = new WebSocketPair();
     const client = pair[0];
     const server = pair[1];
     server.accept();
-    this.core.attachSocket(server);
+    this.core.attachSocket(server, true, {
+      source: "cloudflare",
+      visitorHash: request.headers.get(INTERNAL_VISITOR_HEADER) ?? undefined,
+      countryCode: request.headers.get(INTERNAL_COUNTRY_HEADER) ?? "ZZ",
+      regionCode: request.headers.get(INTERNAL_REGION_HEADER) ?? "",
+      isProbe: false
+    });
     return new Response(null, { status: 101, webSocket: client });
+  }
+}
+
+export class MetricsHub {
+  private readonly store: SqlMetricsStore;
+  private readonly availabilityTarget: string;
+
+  constructor(
+    private readonly state: DurableObjectState,
+    private readonly env: Env
+  ) {
+    this.store = new SqlMetricsStore(new DurableObjectSqlAdapter(state.storage), {
+      source: "cloudflare"
+    });
+    this.availabilityTarget = normalizeSelfOrigin(
+      env.SELF_ORIGIN ?? "https://simple-live-sync.3439394104.workers.dev"
+    );
+  }
+
+  async fetch(request: Request): Promise<Response> {
+    const url = new URL(request.url);
+    if (url.pathname === "/internal/record") {
+      if (request.method !== "POST") {
+        return json({ status: false, message: "method not allowed" }, 405);
+      }
+      if (!metricsEnabled(this.env)) {
+        return new Response(null, { status: 204 });
+      }
+      try {
+        const body = (await request.json()) as {
+          event?: MetricsEvent;
+          context?: ConnectionContext;
+          occurredAt?: number;
+        };
+        if (!body.event) {
+          throw new TypeError("metrics event is required");
+        }
+        this.store.write([
+          createMetricRecord(body.event, body.context, body.occurredAt ?? Date.now())
+        ]);
+        return new Response(null, { status: 204 });
+      } catch (error) {
+        return json({ status: false, message: stringifyError(error) }, 400);
+      }
+    }
+    if (url.pathname === "/internal/probe") {
+      if (request.method !== "POST") {
+        return json({ status: false, message: "method not allowed" }, 405);
+      }
+      if (!metricsEnabled(this.env)) {
+        return new Response(null, { status: 204 });
+      }
+      const occurredAt = Date.now();
+      const event = await runCloudflareAvailabilityProbe(this.availabilityTarget);
+      this.store.write(
+        [
+          createMetricRecord(
+            event,
+            { source: "cloudflare", isProbe: true },
+            occurredAt
+          )
+        ],
+        { receivedAt: Date.now() }
+      );
+      return json({ status: true, availability: event });
+    }
+    if (isStatsApiPath(url.pathname)) {
+      const result = queryStatsApi(this.store, url, this.availabilityTarget);
+      return json(result.payload, result.status, STATS_CACHE_CONTROL);
+    }
+    return json({ status: false, message: "not found" }, 404);
+  }
+}
+
+class CloudflareMetricsSink implements MetricsSink {
+  constructor(
+    private readonly state: DurableObjectState,
+    private readonly env: Env
+  ) {}
+
+  record(
+    event: MetricsEvent,
+    context: ConnectionContext = {},
+    occurredAt: number | Date = Date.now()
+  ): void {
+    if (!metricsEnabled(this.env)) {
+      return;
+    }
+    const record = createMetricRecord(
+      event,
+      { ...context, source: "cloudflare" },
+      occurredAt
+    );
+    this.state.waitUntil(
+      metricsStub(this.env)
+        .fetch("https://metrics.internal/internal/record", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify(record)
+        })
+        .then((response) => {
+          if (!response.ok) {
+            throw new Error(`metrics write returned ${response.status}`);
+          }
+        })
+        .catch((error) => console.error("Metrics write failed", stringifyError(error)))
+    );
   }
 }
 
@@ -560,6 +781,7 @@ export function renderHomePage(origin: string): string {
     <header>
       <div class="brand"><div class="mark">SL</div><span>Simple Live Sync</span></div>
       <nav>
+        <a href="/stats">统计</a>
         <a href="#usage">使用</a>
         <a href="#diagnostics">检测</a>
         <a href="#privacy">隐私</a>
@@ -576,6 +798,7 @@ export function renderHomePage(origin: string): string {
           <div class="actions">
             <button class="primary" id="run-check">检测服务</button>
             <a class="button secondary" href="/health">查看 /health</a>
+            <a class="button secondary" href="/stats">查看调用统计</a>
           </div>
         </div>
         <aside class="status-card" id="diagnostics">
@@ -583,6 +806,8 @@ export function renderHomePage(origin: string): string {
           <div class="metric"><span>HTTP endpoint</span><code>${escapeHtml(origin)}/health</code></div>
           <div class="metric"><span>WebSocket endpoint</span><code>${escapeHtml(syncUrl)}</code></div>
           <div class="metric"><span>App 默认 endpoint</span><code>${escapeHtml(canonicalSyncUrl)}</code></div>
+          <div class="metric"><span>本地永久总调用</span><strong id="home-total-calls">—</strong></div>
+          <div class="metric"><span>近 30 天可用率</span><strong id="home-availability">—</strong></div>
           <div class="diag" id="diag-output">点击“检测服务”后会检查 /health 和 WebSocket ping/pong。</div>
         </aside>
       </section>
@@ -615,7 +840,7 @@ export function renderHomePage(origin: string): string {
         </article>
         <article class="card wide" id="privacy">
           <h2>隐私说明</h2>
-          <p>该服务不保存关注列表、观看历史、Cookie、屏蔽词或其他同步内容。同步数据只在同一个临时房间内通过 WebSocket 转发，房间过期或创建者断开后即销毁。</p>
+          <p>该服务不保存关注列表、观看历史、Cookie、屏蔽词或其他同步内容。同步数据只在同一个临时房间内通过 WebSocket 转发，房间过期或创建者断开后即销毁。调用统计仅保存 HMAC 匿名访客标识及国家/中国省级聚合，匿名明细保留 90 天；自建服务器的常规 Nginx 访问日志仍按运维策略独立轮转。</p>
         </article>
         <article class="card">
           <h2>自建服务</h2>
@@ -632,7 +857,7 @@ export function renderHomePage(origin: string): string {
       </section>
     </main>
 
-    <footer>Simple Live Sync · Version ${escapeHtml(VERSION)} · <a href="https://github.com/June6699/dart_simple_live">GitHub</a></footer>
+    <footer>Simple Live Sync · Version ${escapeHtml(VERSION)} · <a href="/stats">本地统计</a> · <a href="https://github.com/June6699/dart_simple_live">GitHub</a></footer>
   </div>
   <script src="/assets/app.js" defer></script>
 </body>
@@ -706,6 +931,8 @@ export function renderAppScript(): string {
   return `const button = document.getElementById("run-check");
 const output = document.getElementById("diag-output");
 const pill = document.getElementById("status-pill");
+const totalCalls = document.getElementById("home-total-calls");
+const availability = document.getElementById("home-availability");
 
 function setStatus(text, ok) {
   pill.textContent = text;
@@ -752,6 +979,28 @@ function checkWebSocket() {
   });
 }
 
+async function loadStatsSummary() {
+  try {
+    const response = await fetch("/api/stats/summary");
+    if (!response.ok) {
+      throw new Error("statistics unavailable");
+    }
+    const data = await response.json();
+    const integer = new Intl.NumberFormat("zh-CN", { maximumFractionDigits: 0 });
+    if (totalCalls) {
+      totalCalls.textContent = integer.format(Number(data.totalCalls) || 0);
+    }
+    if (availability) {
+      availability.textContent = data.availability30d == null
+        ? "待积累"
+        : new Intl.NumberFormat("zh-CN", { maximumFractionDigits: 2 }).format(Number(data.availability30d)) + "%";
+    }
+  } catch {
+    if (totalCalls) totalCalls.textContent = "暂不可用";
+    if (availability) availability.textContent = "暂不可用";
+  }
+}
+
 button?.addEventListener("click", async () => {
   output.textContent = "";
   setStatus("检测中", true);
@@ -766,7 +1015,9 @@ button?.addEventListener("click", async () => {
   } finally {
     button.disabled = false;
   }
-});`;
+});
+
+void loadStatsSummary();`;
 }
 
 function escapeHtml(value: string): string {
@@ -777,12 +1028,12 @@ function escapeHtml(value: string): string {
     .replaceAll('"', "&quot;");
 }
 
-function json(payload: unknown, status = 200): Response {
+function json(payload: unknown, status = 200, cacheControl = "no-store"): Response {
   return new Response(JSON.stringify(payload), {
     status,
     headers: {
       "content-type": "application/json; charset=utf-8",
-      "cache-control": "no-store"
+      "cache-control": cacheControl
     }
   });
 }
@@ -836,4 +1087,180 @@ function stringifyError(error: unknown): string {
     return error.message;
   }
   return String(error);
+}
+
+function metricsStub(env: Env): DurableObjectStub {
+  return env.METRICS.get(env.METRICS.idFromName("global-metrics-hub"));
+}
+
+function metricsEnabled(env: Env): boolean {
+  return env.METRICS_ENABLED?.trim().toLowerCase() !== "false";
+}
+
+function assetRequest(request: Request, pathname: string): Request {
+  const url = new URL(request.url);
+  url.pathname = pathname;
+  url.search = "";
+  return new Request(url.toString(), {
+    method: request.method,
+    headers: request.headers
+  });
+}
+
+async function cloudflareConnectionContext(
+  request: Request,
+  env: Env
+): Promise<ConnectionContext> {
+  const cf = (request.cf ?? {}) as Record<string, unknown>;
+  const countryCode = normalizeCountryCode(cf.country);
+  const regionCode = normalizeRegionCode(cf.regionCode);
+  const ip = request.headers.get("CF-Connecting-IP")?.trim();
+  return {
+    source: "cloudflare",
+    countryCode,
+    regionCode,
+    visitorHash:
+      ip && env.IP_HASH_SECRET ? await hmacSha256(env.IP_HASH_SECRET, ip) : undefined,
+    isProbe: false
+  };
+}
+
+let cachedHmacKey: { secret: string; key: CryptoKey } | undefined;
+
+async function hmacSha256(secret: string, value: string): Promise<string> {
+  let key = cachedHmacKey?.secret === secret ? cachedHmacKey.key : undefined;
+  if (!key) {
+    key = await crypto.subtle.importKey(
+      "raw",
+      new TextEncoder().encode(secret),
+      { name: "HMAC", hash: "SHA-256" },
+      false,
+      ["sign"]
+    );
+    cachedHmacKey = { secret, key };
+  }
+  const signature = await crypto.subtle.sign(
+    "HMAC",
+    key,
+    new TextEncoder().encode(value)
+  );
+  return [...new Uint8Array(signature)]
+    .map((byte) => byte.toString(16).padStart(2, "0"))
+    .join("");
+}
+
+function normalizeSelfOrigin(value: string): string {
+  const url = new URL(value.trim());
+  if (url.protocol !== "http:" && url.protocol !== "https:") {
+    throw new TypeError("SELF_ORIGIN must use http or https");
+  }
+  return url.origin;
+}
+
+async function runCloudflareAvailabilityProbe(origin: string): Promise<MetricsEvent> {
+  const [http, websocket] = await Promise.all([
+    probeCloudflareHttp(origin),
+    probeCloudflareWebSocket(origin)
+  ]);
+  return {
+    type: "availability_check",
+    target: origin,
+    httpOk: http.ok,
+    websocketOk: websocket.ok,
+    httpLatencyMs: http.latencyMs,
+    websocketLatencyMs: websocket.latencyMs,
+    errorCode: [http.error, websocket.error].filter(Boolean).join(";").slice(0, 80) || undefined
+  };
+}
+
+type ProbeResult = { ok: boolean; latencyMs?: number; error?: string };
+
+async function probeCloudflareHttp(origin: string): Promise<ProbeResult> {
+  const startedAt = Date.now();
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 10_000);
+  try {
+    const response = await fetch(`${origin}/health?format=json`, {
+      signal: controller.signal
+    });
+    const payload = (await response.json()) as { status?: unknown };
+    if (!response.ok || payload.status !== true) {
+      throw new Error(`HTTP ${response.status}`);
+    }
+    return { ok: true, latencyMs: Date.now() - startedAt };
+  } catch (error) {
+    return { ok: false, error: `http:${shortProbeError(error)}` };
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+async function probeCloudflareWebSocket(origin: string): Promise<ProbeResult> {
+  const startedAt = Date.now();
+  const controller = new AbortController();
+  const fetchTimeout = setTimeout(() => controller.abort(), 10_000);
+  try {
+    const response = await fetch(`${origin}/sync`, {
+      headers: { Upgrade: "websocket" },
+      signal: controller.signal
+    });
+    const socket = response.webSocket;
+    if (!socket) {
+      throw new Error(`upgrade:${response.status}`);
+    }
+    clearTimeout(fetchTimeout);
+    socket.accept();
+    const requestId = `availability-${crypto.randomUUID()}`;
+    return await new Promise<ProbeResult>((resolve) => {
+      let settled = false;
+      const finish = (result: ProbeResult) => {
+        if (settled) {
+          return;
+        }
+        settled = true;
+        clearTimeout(timeout);
+        try {
+          socket.close(1000, "probe complete");
+        } catch {
+          // ignored
+        }
+        resolve(result);
+      };
+      const timeout = setTimeout(
+        () => finish({ ok: false, error: "ws:timeout" }),
+        Math.max(1, 10_000 - (Date.now() - startedAt))
+      );
+      socket.addEventListener("message", (event) => {
+        try {
+          const payload = JSON.parse(String(event.data)) as {
+            type?: unknown;
+            requestId?: unknown;
+          };
+          if (payload.type === "pong" && payload.requestId === requestId) {
+            finish({ ok: true, latencyMs: Date.now() - startedAt });
+          }
+        } catch {
+          // Ignore unrelated messages while waiting for pong.
+        }
+      });
+      socket.addEventListener("error", () =>
+        finish({ ok: false, error: "ws:error" })
+      );
+      socket.addEventListener("close", () =>
+        finish({ ok: false, error: "ws:closed" })
+      );
+      socket.send(JSON.stringify({ type: "ping", requestId }));
+    });
+  } catch (error) {
+    return { ok: false, error: `ws:${shortProbeError(error)}` };
+  } finally {
+    clearTimeout(fetchTimeout);
+  }
+}
+
+function shortProbeError(error: unknown): string {
+  if (error instanceof Error) {
+    return error.name === "AbortError" ? "timeout" : error.message.slice(0, 40);
+  }
+  return String(error).slice(0, 40);
 }

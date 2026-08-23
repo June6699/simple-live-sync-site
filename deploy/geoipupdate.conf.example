@@ -1,0 +1,6 @@
+# Install as /etc/GeoIP.conf with mode 0600, then replace both placeholders.
+# Never commit the real AccountID or LicenseKey.
+AccountID YOUR_MAXMIND_ACCOUNT_ID
+LicenseKey YOUR_MAXMIND_LICENSE_KEY
+EditionIDs GeoLite2-City
+DatabaseDirectory /var/lib/GeoIP

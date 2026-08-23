@@ -1,0 +1,246 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="description" content="Simple Live Sync 本地实例的匿名调用、地理分布与可用性统计" />
+  <meta name="color-scheme" content="light dark" />
+  <title>调用统计 · Simple Live Sync</title>
+  <link rel="stylesheet" href="/assets/stats.css" />
+</head>
+<body>
+  <a class="skip-link" href="#main-content">跳到主要内容</a>
+
+  <div class="page-shell">
+    <header class="site-header" aria-label="站点导航">
+      <a class="brand" href="/" aria-label="返回 Simple Live Sync 首页">
+        <span class="brand-mark" aria-hidden="true">SL</span>
+        <span>Simple Live Sync</span>
+      </a>
+      <nav class="top-nav" aria-label="主要导航">
+        <a aria-current="page" href="/stats">统计</a>
+        <a href="/health">健康状态</a>
+        <a href="/">首页</a>
+      </nav>
+    </header>
+
+    <main id="main-content" tabindex="-1">
+      <section class="hero" aria-labelledby="page-title">
+        <div>
+          <p class="eyebrow">本实例 · 匿名聚合</p>
+          <h1 id="page-title">调用统计与可用性</h1>
+          <p class="hero-copy">这里只展示当前服务实例从统计启用后产生的汇总数据。Cloudflare 与自建服务各自独立，原始 IP 和同步内容不会进入统计库。</p>
+        </div>
+        <div class="freshness" aria-live="polite">
+          <span class="freshness-dot" aria-hidden="true"></span>
+          <span id="freshness-text">正在读取最新数据…</span>
+        </div>
+      </section>
+
+      <div id="fatal-error" class="notice notice-error" role="alert" hidden>
+        <div>
+          <strong>统计页面暂时无法加载</strong>
+          <p id="fatal-error-message">请稍后重试。同步服务本身不受统计故障影响。</p>
+        </div>
+        <button id="fatal-retry" class="button secondary" type="button">重新加载</button>
+      </div>
+
+      <section class="summary-grid" id="summary" aria-labelledby="summary-title" data-state="loading">
+        <h2 id="summary-title" class="sr-only">核心指标</h2>
+        <article class="metric-card metric-primary">
+          <p>永久总调用</p>
+          <strong id="metric-total" class="metric-value skeleton-line" aria-label="加载中">—</strong>
+          <span>成功建房、入房与四类同步</span>
+        </article>
+        <article class="metric-card">
+          <p>近 24 小时调用</p>
+          <strong id="metric-24h" class="metric-value skeleton-line" aria-label="加载中">—</strong>
+          <span id="metric-24h-note">按 UTC 小时聚合</span>
+        </article>
+        <article class="metric-card">
+          <p>近 30 天独立 IP</p>
+          <strong id="metric-visitors" class="metric-value skeleton-line" aria-label="加载中">—</strong>
+          <span>经 HMAC 匿名后去重</span>
+        </article>
+        <article class="metric-card">
+          <p>近 30 天可用率</p>
+          <strong id="metric-availability" class="metric-value skeleton-line" aria-label="加载中">—</strong>
+          <span id="metric-availability-note">HTTP 与 WebSocket 自检</span>
+        </article>
+      </section>
+
+      <section class="range-toolbar" aria-labelledby="range-title">
+        <div>
+          <h2 id="range-title">观察范围</h2>
+          <p id="range-help">切换后会同步更新调用、地图和可用性图表。</p>
+        </div>
+        <div class="toolbar-actions">
+          <div class="segmented" role="group" aria-describedby="range-help" aria-label="统计时间范围">
+            <button type="button" data-range="3h" aria-pressed="true">3 小时</button>
+            <button type="button" data-range="24h" aria-pressed="false">24 小时</button>
+            <button type="button" data-range="7d" aria-pressed="false">7 天</button>
+            <button type="button" data-range="30d" aria-pressed="false">30 天</button>
+            <button type="button" data-range="90d" aria-pressed="false">90 天</button>
+            <button type="button" data-range="all" aria-pressed="false">全部</button>
+          </div>
+          <button id="refresh-data" class="button secondary icon-button" type="button">
+            <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path d="M20 11a8.1 8.1 0 0 0-14.9-4M4 4v5h5M4 13a8.1 8.1 0 0 0 14.9 4M20 20v-5h-5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+            刷新
+          </button>
+        </div>
+        <p id="range-cap-note" class="range-cap-note" hidden>“全部”仅用于调用趋势；地图和可用性按其最长保留范围显示近 90 天。</p>
+      </section>
+
+      <section class="dashboard-grid" aria-label="调用趋势与类型分布">
+        <article class="panel panel-wide">
+          <div class="panel-heading">
+            <div>
+              <p class="panel-kicker">CALLS OVER TIME</p>
+              <h2>调用时间轴</h2>
+            </div>
+            <p class="panel-meta" id="timeline-granularity">UTC 时间</p>
+          </div>
+          <div class="chart-shell" id="timeline-shell" data-state="loading">
+            <div id="timeline-chart" class="chart chart-timeline" role="img" aria-label="调用次数时间趋势图"></div>
+            <div class="panel-state" aria-live="polite">
+              <span class="loader" aria-hidden="true"></span>
+              <p class="panel-state-message">正在加载调用趋势…</p>
+              <button class="button secondary panel-retry" type="button">重试</button>
+            </div>
+          </div>
+          <p id="timeline-summary" class="chart-summary sr-only"></p>
+        </article>
+
+        <article class="panel">
+          <div class="panel-heading">
+            <div>
+              <p class="panel-kicker">EVENT MIX</p>
+              <h2>事件类型分布</h2>
+            </div>
+          </div>
+          <div class="chart-shell" id="events-shell" data-state="loading">
+            <div id="events-chart" class="chart chart-events" role="img" aria-label="六类成功调用的数量分布图"></div>
+            <div class="panel-state" aria-live="polite">
+              <span class="loader" aria-hidden="true"></span>
+              <p class="panel-state-message">正在加载事件分布…</p>
+              <button class="button secondary panel-retry" type="button">重试</button>
+            </div>
+          </div>
+          <ul id="events-text-list" class="compact-data-list" aria-label="事件类型数量列表"></ul>
+        </article>
+      </section>
+
+      <section class="panel map-panel" aria-labelledby="map-title">
+        <div class="panel-heading map-heading">
+          <div>
+            <p class="panel-kicker">ORIGIN MAP</p>
+            <h2 id="map-title">IP 来源分布</h2>
+          </div>
+          <div class="map-actions">
+            <div class="breadcrumbs" aria-label="地图层级">
+              <button id="world-crumb" type="button" aria-current="page">世界</button>
+              <span aria-hidden="true">/</span>
+              <button id="china-crumb" type="button" hidden>中国省级</button>
+            </div>
+            <div class="segmented compact" role="group" aria-label="地图着色指标">
+              <button type="button" data-map-metric="uniqueVisitors" aria-pressed="true">独立 IP</button>
+              <button type="button" data-map-metric="calls" aria-pressed="false">调用次数</button>
+            </div>
+          </div>
+        </div>
+
+        <p id="map-hint" class="panel-description">颜色越深表示匿名独立 IP 越多。点击国家查看详情；点击中国可下钻到 34 个省级区域。</p>
+        <div class="map-layout">
+          <div class="chart-shell map-shell" id="map-shell" data-state="loading">
+            <div id="geo-chart" class="chart chart-map" role="img" aria-describedby="map-hint map-selection" aria-label="世界 IP 来源分布地图"></div>
+            <div class="panel-state" aria-live="polite">
+              <span class="loader" aria-hidden="true"></span>
+              <p class="panel-state-message">正在加载本地地图与地理统计…</p>
+              <button class="button secondary panel-retry" type="button">重试</button>
+            </div>
+          </div>
+          <aside class="map-selection" id="map-selection" aria-live="polite">
+            <span>当前选中</span>
+            <strong id="map-selection-name">尚未选择地区</strong>
+            <dl>
+              <div><dt>独立 IP</dt><dd id="map-selection-visitors">—</dd></div>
+              <div><dt>调用次数</dt><dd id="map-selection-calls">—</dd></div>
+            </dl>
+          </aside>
+        </div>
+
+        <div class="table-section">
+          <div class="table-heading">
+            <div>
+              <h3 id="geo-table-title">有数据的国家和地区</h3>
+              <p>地图的可排序文本替代；“未知地区”不会在地图上着色。</p>
+            </div>
+          </div>
+          <div class="data-table-wrap">
+            <table class="data-table" id="geo-table">
+              <caption class="sr-only">IP 来源地理分布数据</caption>
+              <thead>
+                <tr>
+                  <th scope="col" data-sort-key="name" aria-sort="none"><button type="button">地区<span class="sort-indicator" aria-hidden="true"></span></button></th>
+                  <th scope="col" data-sort-key="uniqueVisitors" aria-sort="descending"><button type="button">独立 IP<span class="sort-indicator" aria-hidden="true"></span></button></th>
+                  <th scope="col" data-sort-key="calls" aria-sort="none"><button type="button">调用次数<span class="sort-indicator" aria-hidden="true"></span></button></th>
+                </tr>
+              </thead>
+              <tbody id="geo-table-body">
+                <tr><td colspan="3" class="table-empty">正在加载地理数据…</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+
+      <section class="panel availability-panel" aria-labelledby="availability-title">
+        <div class="panel-heading availability-heading">
+          <div>
+            <p class="panel-kicker">UPTIME</p>
+            <h2 id="availability-title">小时可用性</h2>
+          </div>
+          <div class="status-legend" aria-label="可用性状态图例">
+            <span><i class="status-swatch up" aria-hidden="true"></i>正常</span>
+            <span><i class="status-swatch degraded" aria-hidden="true"></i>部分可用</span>
+            <span><i class="status-swatch down" aria-hidden="true"></i>故障</span>
+            <span><i class="status-swatch pending" aria-hidden="true"></i>待结算</span>
+          </div>
+        </div>
+        <p class="panel-description">每个格子代表一个 UTC 小时。聚焦状态条后可用左右方向键查看相邻小时；斜纹、点纹和文字标签共同表达状态。</p>
+
+        <div class="availability-strip-shell" id="availability-strip-shell" data-state="loading">
+          <div id="availability-strip" class="availability-strip" role="listbox" aria-label="逐小时可用性状态"></div>
+          <div id="availability-selection" class="availability-selection" aria-live="polite">正在加载小时状态…</div>
+        </div>
+
+        <div class="chart-shell latency-shell" id="latency-shell" data-state="loading">
+          <div id="latency-chart" class="chart chart-latency" role="img" aria-label="HTTP 与 WebSocket 自检延迟趋势图"></div>
+          <div class="panel-state" aria-live="polite">
+            <span class="loader" aria-hidden="true"></span>
+            <p class="panel-state-message">正在加载可用性与延迟…</p>
+            <button class="button secondary panel-retry" type="button">重试</button>
+          </div>
+        </div>
+        <p id="availability-summary" class="chart-summary sr-only"></p>
+      </section>
+
+      <section class="privacy-note" aria-labelledby="privacy-title">
+        <svg viewBox="0 0 24 24" width="24" height="24" aria-hidden="true"><path d="M12 3 5 6v5c0 4.7 2.8 8.1 7 10 4.2-1.9 7-5.3 7-10V6l-7-3Z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M9.5 12 11 13.5l3.5-4" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        <div>
+          <h2 id="privacy-title">关于 IP 与隐私</h2>
+          <p>应用统计只保存带密钥的匿名哈希及国家/省级代码，匿名访客明细最多保留 90 天；不会公开原始 IP、房间号、同步内容或密钥。服务器常规访问日志与这里的应用统计是两套独立数据。</p>
+        </div>
+      </section>
+    </main>
+
+    <footer class="site-footer">
+      <span>Simple Live Sync · 本实例统计</span>
+      <span><a href="/">返回首页</a> · <a href="/assets/maps/LICENSES.md">地图来源与许可</a> · <a href="https://github.com/June6699/simple-live-sync-site">GitHub</a></span>
+    </footer>
+  </div>
+
+  <noscript><div class="noscript">此统计页需要 JavaScript 才能读取并呈现聚合数据。</div></noscript>
+  <script src="/assets/stats.js" defer></script>
+</body>
+</html>

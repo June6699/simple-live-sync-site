@@ -2,13 +2,36 @@ name = "simple-live-sync"
 main = "src/index.ts"
 compatibility_date = "2026-05-23"
 
+[build]
+command = "npm run build:web"
+
+[assets]
+directory = "./public"
+binding = "ASSETS"
+run_worker_first = true
+
+[vars]
+SELF_ORIGIN = "https://simple-live-sync.3439394104.workers.dev"
+METRICS_ENABLED = "true"
+
 [[durable_objects.bindings]]
 name = "ROOMS"
 class_name = "RoomHub"
 
+[[durable_objects.bindings]]
+name = "METRICS"
+class_name = "MetricsHub"
+
 [[migrations]]
 tag = "v1"
 new_sqlite_classes = ["RoomHub"]
+
+[[migrations]]
+tag = "v2"
+new_sqlite_classes = ["MetricsHub"]
+
+[triggers]
+crons = ["5 * * * *"]
 
 [observability.logs]
 enabled = true

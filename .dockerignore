@@ -6,3 +6,7 @@ coverage
 dist
 node_modules
 *.log
+GeoIP.conf
+public/assets/stats.js
+public/assets/stats.css
+public/assets/*.map

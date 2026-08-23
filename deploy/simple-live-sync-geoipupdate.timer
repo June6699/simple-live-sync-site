@@ -1,0 +1,11 @@
+[Unit]
+Description=Refresh MaxMind GeoLite2 data daily
+
+[Timer]
+OnCalendar=daily
+RandomizedDelaySec=2h
+Persistent=true
+Unit=simple-live-sync-geoipupdate.service
+
+[Install]
+WantedBy=timers.target

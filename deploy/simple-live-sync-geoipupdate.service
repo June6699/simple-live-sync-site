@@ -1,0 +1,18 @@
+[Unit]
+Description=Update MaxMind GeoLite2 data for Simple Live Sync
+Wants=network-online.target
+After=network-online.target
+ConditionPathExists=/etc/GeoIP.conf
+
+[Service]
+Type=oneshot
+UMask=0027
+ExecStart=/usr/bin/geoipupdate -f /etc/GeoIP.conf -d /var/lib/GeoIP
+ExecStart=/usr/bin/test -r /var/lib/GeoIP/GeoLite2-City.mmdb
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectHome=true
+ProtectSystem=strict
+ReadWritePaths=/var/lib/GeoIP
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6

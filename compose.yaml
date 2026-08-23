@@ -2,14 +2,22 @@ services:
   sync:
     build:
       context: .
+    image: simple-live-sync:${SIMPLE_LIVE_SYNC_IMAGE_TAG:-current}
     container_name: simple-live-sync
     restart: unless-stopped
     environment:
       HOST: 0.0.0.0
       PORT: 8787
-      PUBLIC_ORIGIN: https://sync.furry.mo.cn
+      PUBLIC_ORIGIN: ${PUBLIC_ORIGIN:-https://sync.furry.mo.cn}
+      METRICS_ENABLED: ${METRICS_ENABLED:-false}
+      METRICS_DB_PATH: /app/data/metrics.sqlite
+      IP_HASH_SECRET: ${IP_HASH_SECRET:-}
+      GEOIP_DB_PATH: /usr/share/GeoIP/GeoLite2-City.mmdb
     ports:
       - "127.0.0.1:8787:8787"
+    volumes:
+      - /var/lib/simple-live-sync:/app/data
+      - /var/lib/GeoIP:/usr/share/GeoIP:ro
     healthcheck:
       test:
         - CMD
