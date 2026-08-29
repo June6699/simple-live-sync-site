@@ -12,6 +12,8 @@ services:
       METRICS_ENABLED: ${METRICS_ENABLED:-false}
       METRICS_DB_PATH: /app/data/metrics.sqlite
       IP_HASH_SECRET: ${IP_HASH_SECRET:-}
+      # The published port is host-loopback only; trust the host Nginx hop.
+      TRUST_PROXY_HEADERS: "true"
       GEOIP_DB_PATH: /usr/share/GeoIP/GeoLite2-City.mmdb
     ports:
       - "127.0.0.1:8787:8787"

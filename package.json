@@ -18,6 +18,7 @@
     "test": "vitest run"
   },
   "dependencies": {
+    "d3-geo": "^3.1.1",
     "echarts": "^6.1.0",
     "topojson-client": "^3.1.0",
     "ws": "^8.18.3"
@@ -25,6 +26,7 @@
   "devDependencies": {
     "@cloudflare/vitest-pool-workers": "^0.8.69",
     "@cloudflare/workers-types": "^4.20260522.0",
+    "@types/d3-geo": "^3.1.1",
     "@types/node": "^24.10.1",
     "@types/topojson-client": "^3.1.5",
     "@types/ws": "^8.18.1",

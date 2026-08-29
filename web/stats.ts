@@ -12,6 +12,7 @@ import {
 import { CanvasRenderer } from "echarts/renderers";
 import { feature as topologyFeature } from "topojson-client";
 import "./stats.css";
+import { hasMappableGeoData, worldMapProjection } from "./world-map.js";
 
 echarts.use([
   AriaComponent,
@@ -163,6 +164,12 @@ const NUMERIC_TO_ALPHA2: Record<string, string> = {
   "780": "TT", "788": "TN", "792": "TR", "795": "TM", "800": "UG", "804": "UA",
   "784": "AE", "826": "GB", "840": "US", "858": "UY", "860": "UZ", "548": "VU",
   "862": "VE", "704": "VN", "732": "EH", "887": "YE", "894": "ZM", "716": "ZW"
+};
+
+const WORLD_CODE_BY_SOURCE_NAME: Readonly<Record<string, string>> = {
+  Kosovo: "XK",
+  "N. Cyprus": "CY",
+  Somaliland: "SO"
 };
 
 const CHINA_PROVINCES = [
@@ -858,7 +865,7 @@ async function ensureMapsReady(): Promise<void> {
     worldGeo.features.forEach((mapFeature, index) => {
       const numeric = String(mapFeature.id ?? "").padStart(3, "0");
       const sourceName = toText(mapFeature.properties?.name);
-      const code = NUMERIC_TO_ALPHA2[numeric] ?? `MAP-${index}`;
+      const code = NUMERIC_TO_ALPHA2[numeric] ?? WORLD_CODE_BY_SOURCE_NAME[sourceName] ?? `MAP-${index}`;
       mapFeature.properties = { ...mapFeature.properties, name: code, sourceName };
     });
 
@@ -873,7 +880,10 @@ async function ensureMapsReady(): Promise<void> {
     });
     echarts.registerMap("simple-live-world", worldGeo as never);
     echarts.registerMap("simple-live-china", chinaGeo as never);
-  })();
+  })().catch((error: unknown) => {
+    mapsReady = null;
+    throw error;
+  });
   return mapsReady;
 }
 
@@ -906,18 +916,19 @@ function renderMap(): void {
   }
   const rows = currentGeoRows();
   const mapRows = rows.filter((row) => row.code !== "ZZ");
-  const hasData = rows.some((row) => row.calls > 0 || row.uniqueVisitors > 0);
+  const hasData = hasMappableGeoData(rows);
   const metricLabel = state.mapMetric === "uniqueVisitors" ? "独立 IP" : "调用次数";
   const maximum = Math.max(1, ...mapRows.map((row) => row[state.mapMetric]));
   const palette = chartPalette();
   const mapName = state.mapLevel === "world" ? "simple-live-world" : "simple-live-china";
   const visibleName = state.mapLevel === "world" ? countryName : regionName;
+  byId("map-hint").textContent = `颜色越深表示“${metricLabel}”越多。点击国家查看详情；点击中国可下钻到 34 个省级区域。`;
   byId("geo-chart").setAttribute("aria-label", `${state.mapLevel === "world" ? "世界" : "中国省级"}${metricLabel}来源分布地图`);
   chart.setOption({
     animation: !reducedMotion.matches,
     aria: {
       enabled: true,
-      decal: { show: true },
+      decal: { show: false },
       description: `${RANGE_LABELS[state.range === "all" ? "90d" : state.range]}${state.mapLevel === "world" ? "世界国家" : "中国省级"}${metricLabel}分布。地图下方提供完整数据表。`
     },
     tooltip: {
@@ -950,6 +961,7 @@ function renderMap(): void {
       name: metricLabel,
       type: "map",
       map: mapName,
+      ...(state.mapLevel === "world" ? { projection: worldMapProjection } : {}),
       roam: false,
       selectedMode: "single",
       data: mapRows.map((row) => ({

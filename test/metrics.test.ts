@@ -199,6 +199,105 @@ describe("metrics storage", () => {
     })).toHaveLength(0);
     adapter.close();
   });
+
+  it("falls back to daily tables when hourly tables are empty (backward compatibility)", () => {
+    const adapter = new NodeSqliteAdapter(":memory:");
+    const store = new SqlMetricsStore(adapter);
+    const now = Date.parse("2026-08-20T12:05:00Z");
+    const context = {
+      source: "node" as const,
+      visitorHash: "f".repeat(64),
+      countryCode: "US",
+      regionCode: "CA"
+    };
+
+    // Write to daily tables only (simulating old database)
+    store.write([metric({ type: "room_created" }, context, now)]);
+
+    // Clear hourly tables to simulate v1 database
+    adapter.run("DELETE FROM metrics_geo_hourly");
+    adapter.run("DELETE FROM metrics_visitors_hourly");
+
+    // Query with hour granularity should fall back to daily data
+    const geo24h = store.queryGeo(parseMetricsRange("24h", now + 1_000));
+    expect(geo24h.countries).toEqual([
+      { countryCode: "US", calls: 1, uniqueVisitors: 1 }
+    ]);
+    expect(geo24h.regions).toEqual([
+      { countryCode: "US", regionCode: "CA", calls: 1, uniqueVisitors: 1 }
+    ]);
+    expect(store.queryUniqueVisitors(parseMetricsRange("24h", now + 1_000))).toBe(1);
+
+    adapter.close();
+  });
+
+  it("excludes records outside 24-hour window boundary", () => {
+    const adapter = new NodeSqliteAdapter(":memory:");
+    const store = new SqlMetricsStore(adapter);
+    const now = Date.parse("2026-08-20T12:00:00Z");
+    const context = {
+      source: "node" as const,
+      visitorHash: "g".repeat(64),
+      countryCode: "CN",
+      regionCode: "BJ"
+    };
+
+    // Write records at different times
+    store.write([
+      metric({ type: "room_created" }, context, now - 25 * 60 * 60 * 1000), // 25 hours ago
+      metric({ type: "room_joined" }, context, now - 24 * 60 * 60 * 1000), // exactly 24 hours ago
+      metric({ type: "send_favorite" }, context, now - 23 * 60 * 60 * 1000), // 23 hours ago
+      metric({ type: "send_history" }, context, now - 1 * 60 * 60 * 1000) // 1 hour ago
+    ]);
+
+    const geo24h = store.queryGeo(parseMetricsRange("24h", now));
+    const summary = store.querySummary("https://example.test", now);
+
+    // Should include only the 3 calls within 24 hours (not the 25-hour-old one)
+    expect(geo24h.countries[0]?.calls).toBe(3);
+    expect(summary.calls24h).toBe(3);
+
+    adapter.close();
+  });
+
+  it("does not write to database on public availability query", () => {
+    const adapter = new NodeSqliteAdapter(":memory:");
+    const store = new SqlMetricsStore(adapter);
+    const target = "https://example.test";
+    const now = Date.parse("2026-08-20T12:05:00Z");
+
+    // Write one probe
+    store.write([
+      metric(
+        {
+          type: "availability_check",
+          target,
+          httpOk: true,
+          websocketOk: true
+        },
+        { source: "node", isProbe: true },
+        now
+      )
+    ], { receivedAt: now });
+
+    // Read meta before query
+    const metaBefore = adapter.all<{ key: string; value: string }>(
+      "SELECT key, value FROM metrics_meta WHERE key LIKE 'availability_settled:%'"
+    );
+
+    // Public query should not write
+    store.queryAvailability(parseMetricsRange("24h", now + 1_000), target, now + 1_000);
+
+    // Read meta after query
+    const metaAfter = adapter.all<{ key: string; value: string }>(
+      "SELECT key, value FROM metrics_meta WHERE key LIKE 'availability_settled:%'"
+    );
+
+    // Meta should be unchanged
+    expect(metaAfter).toEqual(metaBefore);
+
+    adapter.close();
+  });
 });
 
 describe("Node metrics queue", () => {

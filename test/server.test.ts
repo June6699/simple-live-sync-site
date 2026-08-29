@@ -6,7 +6,11 @@ import { join } from "node:path";
 
 import { MAX_MESSAGE_BYTES } from "../src/index.js";
 import { NodeMetricsService } from "../src/metrics-node.js";
-import { createSyncServer, type SyncServerRuntime } from "../src/server.js";
+import {
+  createSyncServer,
+  resolveNodeConnectionContext,
+  type SyncServerRuntime
+} from "../src/server.js";
 
 let runtime: SyncServerRuntime | undefined;
 let metricsDirectory: string | undefined;
@@ -21,6 +25,31 @@ afterEach(async () => {
 });
 
 describe("Node sync server", () => {
+  it("only accepts forwarded visitor headers from an explicitly trusted proxy", () => {
+    const request = {
+      socket: { remoteAddress: "172.18.0.1" },
+      headers: {
+        "x-real-ip": "203.0.113.10",
+        "x-geo-country": "DE",
+        "x-geo-region": "BE"
+      }
+    } as never;
+
+    expect(resolveNodeConnectionContext(request, "test-secret", false)).toEqual({
+      source: "node",
+      countryCode: "ZZ",
+      regionCode: "",
+      isProbe: false
+    });
+    expect(resolveNodeConnectionContext(request, "test-secret", true)).toMatchObject({
+      source: "node",
+      countryCode: "DE",
+      regionCode: "BE",
+      visitorHash: expect.stringMatching(/^[a-f0-9]{64}$/),
+      isProbe: false
+    });
+  });
+
   it("serves health, rejects normal HTTP on /sync, and accepts WebSocket ping", async () => {
     runtime = createSyncServer({
       host: "127.0.0.1",

@@ -5,6 +5,7 @@ import {
   MAX_ROOM_CLIENTS,
   RoomHubCore
 } from "../src/index.js";
+import type { ConnectionContext, MetricsEvent } from "../src/metrics.js";
 
 class FakeSocket {
   readonly messages: Array<Record<string, unknown>> = [];
@@ -35,9 +36,9 @@ function createHub(options: ConstructorParameters<typeof RoomHubCore>[0] = {}): 
   return hub;
 }
 
-function attach(hub: RoomHubCore): FakeSocket {
+function attach(hub: RoomHubCore, context: ConnectionContext = {}): FakeSocket {
   const socket = new FakeSocket();
-  hub.attachSocket(socket as unknown as WebSocket, false);
+  hub.attachSocket(socket as unknown as WebSocket, false, context);
   return socket;
 }
 
@@ -109,6 +110,8 @@ describe("RoomHubCore", () => {
     const creator = attach(hub);
     await send(hub, creator, "not-json");
     expect(latest(creator, "error")?.error).toMatchObject({ code: "invalidJson" });
+    await send(hub, creator, "null");
+    expect(latest(creator, "error")?.error).toMatchObject({ code: "invalidMessage" });
     await send(hub, creator, "x".repeat(MAX_MESSAGE_BYTES + 1));
     expect(latest(creator, "error")?.error).toMatchObject({ code: "payloadTooLarge" });
 
@@ -136,6 +139,115 @@ describe("RoomHubCore", () => {
       roomId,
       reason: "creatorDisconnected"
     });
+  });
+
+  it("preserves live connection context when clients leave or their room is destroyed", async () => {
+    const metrics: Array<{ event: MetricsEvent; context?: ConnectionContext }> = [];
+    const hub = createHub({
+      metricsSink: {
+        record(event, context) {
+          metrics.push({ event, context });
+        }
+      }
+    });
+    const creatorContext = {
+      source: "node" as const,
+      visitorHash: "creator-hash",
+      countryCode: "CN",
+      regionCode: "BJ"
+    };
+    const joinerContext = {
+      source: "node" as const,
+      visitorHash: "joiner-hash",
+      countryCode: "US",
+      regionCode: ""
+    };
+    const creator = attach(hub, creatorContext);
+    const joiner = attach(hub, joinerContext);
+
+    await send(hub, creator, { type: "createRoom", payload: clientInfo() });
+    const firstRoomId = latest(creator, "roomCreated")?.roomId as string;
+    await send(hub, joiner, {
+      type: "joinRoom",
+      roomId: firstRoomId,
+      payload: clientInfo("Simple Live TV")
+    });
+    await send(hub, creator, { type: "leaveRoom" });
+    expect(latest(joiner, "roomDestroyed")).toMatchObject({
+      roomId: firstRoomId,
+      reason: "creatorDisconnected"
+    });
+
+    await send(hub, joiner, { type: "createRoom", payload: clientInfo("Simple Live TV") });
+    const secondRoomId = latest(joiner, "roomCreated")?.roomId as string;
+    await send(hub, creator, {
+      type: "joinRoom",
+      roomId: secondRoomId,
+      payload: clientInfo()
+    });
+
+    expect(metrics.map(({ context }) => context)).toEqual([
+      creatorContext,
+      joinerContext,
+      joinerContext,
+      creatorContext
+    ]);
+  });
+
+  it("keeps detached live sockets under heartbeat supervision", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-01-01T00:00:00Z"));
+    const hub = createHub({ heartbeatTimeoutMs: 100, sweepIntervalMs: 10 });
+    const creator = attach(hub);
+    const joiner = attach(hub);
+    await send(hub, creator, { type: "createRoom", payload: clientInfo() });
+    const roomId = latest(creator, "roomCreated")?.roomId as string;
+    await send(hub, joiner, { type: "joinRoom", roomId, payload: clientInfo() });
+
+    await send(hub, creator, { type: "leaveRoom" });
+    await vi.advanceTimersByTimeAsync(110);
+
+    expect(creator.closed).toMatchObject({ code: 1001, reason: "heartbeat timeout" });
+    expect(joiner.closed).toMatchObject({ code: 1001, reason: "heartbeat timeout" });
+  });
+
+  it("treats joining the current room as an idempotent retry", async () => {
+    const metricTypes: string[] = [];
+    const hub = createHub({
+      metricsSink: {
+        record(event) {
+          metricTypes.push(event.type);
+        }
+      }
+    });
+    const creator = attach(hub);
+    await send(hub, creator, { type: "createRoom", payload: clientInfo() });
+    const roomId = latest(creator, "roomCreated")?.roomId as string;
+
+    await send(hub, creator, {
+      type: "joinRoom",
+      requestId: "retry-join",
+      roomId,
+      payload: clientInfo()
+    });
+    expect(latest(creator, "roomJoined")).toMatchObject({
+      requestId: "retry-join",
+      roomId,
+      user: { isCreator: true }
+    });
+    expect(latest(creator, "roomJoined")?.expiresIn).toEqual(expect.any(Number));
+
+    await send(hub, creator, {
+      type: "sendHistory",
+      requestId: "after-retry",
+      roomId,
+      payload: { overlay: false, content: "[]" }
+    });
+    expect(latest(creator, "ack")).toMatchObject({
+      requestId: "after-retry",
+      roomId
+    });
+    expect(metricTypes).toEqual(["room_created", "send_history"]);
   });
 
   it("expires rooms after their TTL", async () => {

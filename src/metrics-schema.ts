@@ -1,4 +1,4 @@
-export const METRICS_SCHEMA_VERSION = 1;
+export const METRICS_SCHEMA_VERSION = 2;
 
 export const METRICS_SCHEMA_STATEMENTS = [
   `CREATE TABLE IF NOT EXISTS metrics_meta (
@@ -30,7 +30,25 @@ export const METRICS_SCHEMA_STATEMENTS = [
     count INTEGER NOT NULL,
     PRIMARY KEY (bucket_start, country_code, region_code, event_type)
   )`,
+  `CREATE TABLE IF NOT EXISTS metrics_geo_hourly (
+    bucket_start INTEGER NOT NULL,
+    country_code TEXT NOT NULL,
+    region_code TEXT NOT NULL,
+    event_type TEXT NOT NULL,
+    count INTEGER NOT NULL,
+    PRIMARY KEY (bucket_start, country_code, region_code, event_type)
+  )`,
   `CREATE TABLE IF NOT EXISTS metrics_visitors_daily (
+    bucket_start INTEGER NOT NULL,
+    visitor_hash TEXT NOT NULL,
+    country_code TEXT NOT NULL,
+    region_code TEXT NOT NULL,
+    first_seen_at INTEGER NOT NULL,
+    last_seen_at INTEGER NOT NULL,
+    event_count INTEGER NOT NULL,
+    PRIMARY KEY (bucket_start, visitor_hash, country_code, region_code)
+  )`,
+  `CREATE TABLE IF NOT EXISTS metrics_visitors_hourly (
     bucket_start INTEGER NOT NULL,
     visitor_hash TEXT NOT NULL,
     country_code TEXT NOT NULL,
@@ -69,8 +87,12 @@ export const METRICS_SCHEMA_STATEMENTS = [
     ON metrics_daily (bucket_start, event_type)`,
   `CREATE INDEX IF NOT EXISTS metrics_geo_daily_range_idx
     ON metrics_geo_daily (bucket_start, country_code, region_code, event_type)`,
+  `CREATE INDEX IF NOT EXISTS metrics_geo_hourly_range_idx
+    ON metrics_geo_hourly (bucket_start, country_code, region_code, event_type)`,
   `CREATE INDEX IF NOT EXISTS metrics_visitors_daily_range_idx
     ON metrics_visitors_daily (bucket_start, visitor_hash, country_code, region_code)`,
+  `CREATE INDEX IF NOT EXISTS metrics_visitors_hourly_range_idx
+    ON metrics_visitors_hourly (bucket_start, visitor_hash, country_code, region_code)`,
   `CREATE INDEX IF NOT EXISTS availability_hourly_range_idx
     ON availability_hourly (bucket_start, target)`,
   `CREATE INDEX IF NOT EXISTS availability_daily_range_idx

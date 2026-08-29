@@ -193,6 +193,12 @@ const UPSERT_GEO_DAILY = `INSERT INTO metrics_geo_daily
   ON CONFLICT (bucket_start, country_code, region_code, event_type) DO UPDATE SET
     count = metrics_geo_daily.count + excluded.count`;
 
+const UPSERT_GEO_HOURLY = `INSERT INTO metrics_geo_hourly
+  (bucket_start, country_code, region_code, event_type, count)
+  VALUES (?, ?, ?, ?, ?)
+  ON CONFLICT (bucket_start, country_code, region_code, event_type) DO UPDATE SET
+    count = metrics_geo_hourly.count + excluded.count`;
+
 const UPSERT_VISITOR_DAILY = `INSERT INTO metrics_visitors_daily
   (
     bucket_start, visitor_hash, country_code, region_code,
@@ -202,6 +208,16 @@ const UPSERT_VISITOR_DAILY = `INSERT INTO metrics_visitors_daily
     first_seen_at = MIN(metrics_visitors_daily.first_seen_at, excluded.first_seen_at),
     last_seen_at = MAX(metrics_visitors_daily.last_seen_at, excluded.last_seen_at),
     event_count = metrics_visitors_daily.event_count + excluded.event_count`;
+
+const UPSERT_VISITOR_HOURLY = `INSERT INTO metrics_visitors_hourly
+  (
+    bucket_start, visitor_hash, country_code, region_code,
+    first_seen_at, last_seen_at, event_count
+  ) VALUES (?, ?, ?, ?, ?, ?, ?)
+  ON CONFLICT (bucket_start, visitor_hash, country_code, region_code) DO UPDATE SET
+    first_seen_at = MIN(metrics_visitors_hourly.first_seen_at, excluded.first_seen_at),
+    last_seen_at = MAX(metrics_visitors_hourly.last_seen_at, excluded.last_seen_at),
+    event_count = metrics_visitors_hourly.event_count + excluded.event_count`;
 
 export class SqlMetricsStore {
   readonly source: MetricsSource;
@@ -220,10 +236,19 @@ export class SqlMetricsStore {
   }
 
   initialize(): void {
-    for (const statement of METRICS_SCHEMA_STATEMENTS) {
+    this.adapter.execute(METRICS_SCHEMA_STATEMENTS[0]);
+    const storedVersion = this.readMetaNumber("schema_version");
+    if (storedVersion !== undefined && storedVersion > METRICS_SCHEMA_VERSION) {
+      throw new Error(
+        `metrics schema version ${storedVersion} is newer than supported version ${METRICS_SCHEMA_VERSION}`
+      );
+    }
+    for (const statement of METRICS_SCHEMA_STATEMENTS.slice(1)) {
       this.adapter.execute(statement);
     }
-    this.writeMeta("schema_version", METRICS_SCHEMA_VERSION);
+    if (storedVersion !== METRICS_SCHEMA_VERSION) {
+      this.writeMeta("schema_version", METRICS_SCHEMA_VERSION);
+    }
     this.writeMeta("source", this.source);
     this.lastCleanupAt = this.readMetaNumber("last_cleanup_at") ?? 0;
   }
@@ -253,8 +278,10 @@ export class SqlMetricsStore {
       const totals = new Map<string, UsageAggregate>();
       const hourly = new Map<string, UsageAggregate>();
       const daily = new Map<string, UsageAggregate>();
+      const geoHourly = new Map<string, UsageAggregate>();
       const geoDaily = new Map<string, UsageAggregate>();
-      const visitors = new Map<string, VisitorAggregate>();
+      const visitorsHourly = new Map<string, VisitorAggregate>();
+      const visitorsDaily = new Map<string, VisitorAggregate>();
       const availabilityTargets = new Set<string>();
 
       for (const record of normalized) {
@@ -275,12 +302,22 @@ export class SqlMetricsStore {
           totals,
           hourly,
           daily,
+          geoHourly,
           geoDaily,
-          visitors
+          visitorsHourly,
+          visitorsDaily
         );
       }
 
-      this.persistUsage(totals, hourly, daily, geoDaily, visitors);
+      this.persistUsage(
+        totals,
+        hourly,
+        daily,
+        geoHourly,
+        geoDaily,
+        visitorsHourly,
+        visitorsDaily
+      );
       for (const target of availabilityTargets) {
         this.settleAvailabilityTarget(target, receivedAt);
       }
@@ -346,48 +383,152 @@ export class SqlMetricsStore {
   }
 
   queryUniqueVisitors(range: MetricsRange): number {
-    const normalized = range.granularity === "hour" ? normalizeRange(range, "hour") : normalizeRange(range, "day");
-    const dayFrom = utcDayBucket(normalized.from);
-    const dayTo = utcDayBucket(normalized.to - 1) + DAY_MS;
+    const granularity = range.granularity === "hour" ? "hour" : "day";
+    const normalized = normalizeRange(range, granularity);
+
+    if (granularity === "hour") {
+      // Try hourly table first
+      const hourlyResult = this.adapter.all<{ visitors: MetricsSqlValue }>(
+        `SELECT COUNT(DISTINCT visitor_hash) AS visitors
+         FROM metrics_visitors_hourly
+         WHERE bucket_start >= ? AND bucket_start < ?`,
+        [normalized.from, normalized.to]
+      )[0];
+      const hourlyCount = toNumber(hourlyResult?.visitors ?? 0);
+
+      // If hourly table has data, use it
+      if (hourlyCount > 0) {
+        return hourlyCount;
+      }
+
+      // Fallback to daily table for backward compatibility
+      const dayFrom = utcDayBucket(normalized.from);
+      const dayTo = utcDayBucket(normalized.to - 1) + DAY_MS;
+      const dailyResult = this.adapter.all<{ visitors: MetricsSqlValue }>(
+        `SELECT COUNT(DISTINCT visitor_hash) AS visitors
+         FROM metrics_visitors_daily
+         WHERE bucket_start >= ? AND bucket_start < ?`,
+        [dayFrom, dayTo]
+      )[0];
+      return toNumber(dailyResult?.visitors ?? 0);
+    }
+
+    // For day granularity, use daily table directly
     const row = this.adapter.all<{ visitors: MetricsSqlValue }>(
       `SELECT COUNT(DISTINCT visitor_hash) AS visitors
        FROM metrics_visitors_daily
        WHERE bucket_start >= ? AND bucket_start < ?`,
-      [dayFrom, dayTo]
+      [normalized.from, normalized.to]
     )[0];
     return toNumber(row?.visitors ?? 0);
   }
 
   queryGeo(range: MetricsRange): MetricsGeoResult {
-    const normalized = normalizeRange(range, "day");
-    const callsByCountry = this.adapter.all<RawGeoCountryRow>(
-      `SELECT country_code, SUM(count) AS calls
-       FROM metrics_geo_daily
-       WHERE bucket_start >= ? AND bucket_start < ?
-       GROUP BY country_code`,
-      [normalized.from, normalized.to]
-    );
-    const visitorsByCountry = this.adapter.all<RawGeoCountryVisitorsRow>(
-      `SELECT country_code, COUNT(DISTINCT visitor_hash) AS visitors
-       FROM metrics_visitors_daily
-       WHERE bucket_start >= ? AND bucket_start < ?
-       GROUP BY country_code`,
-      [normalized.from, normalized.to]
-    );
-    const callsByRegion = this.adapter.all<RawGeoRegionRow>(
-      `SELECT country_code, region_code, SUM(count) AS calls
-       FROM metrics_geo_daily
-       WHERE bucket_start >= ? AND bucket_start < ? AND region_code <> ''
-       GROUP BY country_code, region_code`,
-      [normalized.from, normalized.to]
-    );
-    const visitorsByRegion = this.adapter.all<RawGeoRegionVisitorsRow>(
-      `SELECT country_code, region_code, COUNT(DISTINCT visitor_hash) AS visitors
-       FROM metrics_visitors_daily
-       WHERE bucket_start >= ? AND bucket_start < ? AND region_code <> ''
-       GROUP BY country_code, region_code`,
-      [normalized.from, normalized.to]
-    );
+    const granularity = range.granularity === "hour" ? "hour" : "day";
+    const normalized = normalizeRange(range, granularity);
+
+    let callsByCountry: RawGeoCountryRow[];
+    let visitorsByCountry: RawGeoCountryVisitorsRow[];
+    let callsByRegion: RawGeoRegionRow[];
+    let visitorsByRegion: RawGeoRegionVisitorsRow[];
+
+    if (granularity === "hour") {
+      // Try hourly tables first
+      callsByCountry = this.adapter.all<RawGeoCountryRow>(
+        `SELECT country_code, SUM(count) AS calls
+         FROM metrics_geo_hourly
+         WHERE bucket_start >= ? AND bucket_start < ?
+         GROUP BY country_code`,
+        [normalized.from, normalized.to]
+      );
+
+      // If hourly table has data, use it
+      if (callsByCountry.length > 0) {
+        visitorsByCountry = this.adapter.all<RawGeoCountryVisitorsRow>(
+          `SELECT country_code, COUNT(DISTINCT visitor_hash) AS visitors
+           FROM metrics_visitors_hourly
+           WHERE bucket_start >= ? AND bucket_start < ?
+           GROUP BY country_code`,
+          [normalized.from, normalized.to]
+        );
+        callsByRegion = this.adapter.all<RawGeoRegionRow>(
+          `SELECT country_code, region_code, SUM(count) AS calls
+           FROM metrics_geo_hourly
+           WHERE bucket_start >= ? AND bucket_start < ? AND region_code <> ''
+           GROUP BY country_code, region_code`,
+          [normalized.from, normalized.to]
+        );
+        visitorsByRegion = this.adapter.all<RawGeoRegionVisitorsRow>(
+          `SELECT country_code, region_code, COUNT(DISTINCT visitor_hash) AS visitors
+           FROM metrics_visitors_hourly
+           WHERE bucket_start >= ? AND bucket_start < ? AND region_code <> ''
+           GROUP BY country_code, region_code`,
+          [normalized.from, normalized.to]
+        );
+      } else {
+        // Fallback to daily tables for backward compatibility
+        const dayFrom = utcDayBucket(normalized.from);
+        const dayTo = utcDayBucket(normalized.to - 1) + DAY_MS;
+        callsByCountry = this.adapter.all<RawGeoCountryRow>(
+          `SELECT country_code, SUM(count) AS calls
+           FROM metrics_geo_daily
+           WHERE bucket_start >= ? AND bucket_start < ?
+           GROUP BY country_code`,
+          [dayFrom, dayTo]
+        );
+        visitorsByCountry = this.adapter.all<RawGeoCountryVisitorsRow>(
+          `SELECT country_code, COUNT(DISTINCT visitor_hash) AS visitors
+           FROM metrics_visitors_daily
+           WHERE bucket_start >= ? AND bucket_start < ?
+           GROUP BY country_code`,
+          [dayFrom, dayTo]
+        );
+        callsByRegion = this.adapter.all<RawGeoRegionRow>(
+          `SELECT country_code, region_code, SUM(count) AS calls
+           FROM metrics_geo_daily
+           WHERE bucket_start >= ? AND bucket_start < ? AND region_code <> ''
+           GROUP BY country_code, region_code`,
+          [dayFrom, dayTo]
+        );
+        visitorsByRegion = this.adapter.all<RawGeoRegionVisitorsRow>(
+          `SELECT country_code, region_code, COUNT(DISTINCT visitor_hash) AS visitors
+           FROM metrics_visitors_daily
+           WHERE bucket_start >= ? AND bucket_start < ? AND region_code <> ''
+           GROUP BY country_code, region_code`,
+          [dayFrom, dayTo]
+        );
+      }
+    } else {
+      // For day granularity, use daily tables directly
+      callsByCountry = this.adapter.all<RawGeoCountryRow>(
+        `SELECT country_code, SUM(count) AS calls
+         FROM metrics_geo_daily
+         WHERE bucket_start >= ? AND bucket_start < ?
+         GROUP BY country_code`,
+        [normalized.from, normalized.to]
+      );
+      visitorsByCountry = this.adapter.all<RawGeoCountryVisitorsRow>(
+        `SELECT country_code, COUNT(DISTINCT visitor_hash) AS visitors
+         FROM metrics_visitors_daily
+         WHERE bucket_start >= ? AND bucket_start < ?
+         GROUP BY country_code`,
+        [normalized.from, normalized.to]
+      );
+      callsByRegion = this.adapter.all<RawGeoRegionRow>(
+        `SELECT country_code, region_code, SUM(count) AS calls
+         FROM metrics_geo_daily
+         WHERE bucket_start >= ? AND bucket_start < ? AND region_code <> ''
+         GROUP BY country_code, region_code`,
+        [normalized.from, normalized.to]
+      );
+      visitorsByRegion = this.adapter.all<RawGeoRegionVisitorsRow>(
+        `SELECT country_code, region_code, COUNT(DISTINCT visitor_hash) AS visitors
+         FROM metrics_visitors_daily
+         WHERE bucket_start >= ? AND bucket_start < ? AND region_code <> ''
+         GROUP BY country_code, region_code`,
+        [normalized.from, normalized.to]
+      );
+    }
 
     const countries = new Map<string, MetricsGeoCountry>();
     for (const row of callsByCountry) {
@@ -418,7 +559,6 @@ export class SqlMetricsStore {
     now: number | Date = Date.now()
   ): AvailabilityResult {
     const generatedAt = normalizeTimestamp(now);
-    this.adapter.transaction(() => this.settleAvailabilityTarget(target, generatedAt));
     const monitoringStartedAt = this.getAvailabilityMonitoringStart(target);
     const hourlyRange = normalizeRange(range, "hour");
     const rows = this.adapter.all<RawAvailabilityHourlyRow>(
@@ -561,6 +701,12 @@ export class SqlMetricsStore {
       deleted += this.adapter.run("DELETE FROM metrics_hourly WHERE bucket_start < ?", [
         hourCutoff
       ]).changes;
+      deleted += this.adapter.run("DELETE FROM metrics_geo_hourly WHERE bucket_start < ?", [
+        hourCutoff
+      ]).changes;
+      deleted += this.adapter.run("DELETE FROM metrics_visitors_hourly WHERE bucket_start < ?", [
+        hourCutoff
+      ]).changes;
       deleted += this.adapter.run(
         "DELETE FROM metrics_visitors_daily WHERE bucket_start < ?",
         [dayCutoff]
@@ -581,8 +727,10 @@ export class SqlMetricsStore {
     totals: Map<string, UsageAggregate>,
     hourly: Map<string, UsageAggregate>,
     daily: Map<string, UsageAggregate>,
+    geoHourly: Map<string, UsageAggregate>,
     geoDaily: Map<string, UsageAggregate>,
-    visitors: Map<string, VisitorAggregate>
+    visitorsHourly: Map<string, VisitorAggregate>,
+    visitorsDaily: Map<string, VisitorAggregate>
   ): void {
     const hour = utcHourBucket(record.occurredAt);
     const day = utcDayBucket(record.occurredAt);
@@ -595,6 +743,16 @@ export class SqlMetricsStore {
     addUsage(hourly, [hour, base.eventType], { ...base, bucket: hour });
     addUsage(daily, [day, base.eventType], { ...base, bucket: day });
     addUsage(
+      geoHourly,
+      [hour, record.context.countryCode, record.context.regionCode, base.eventType],
+      {
+        ...base,
+        bucket: hour,
+        countryCode: record.context.countryCode,
+        regionCode: record.context.regionCode
+      }
+    );
+    addUsage(
       geoDaily,
       [day, record.context.countryCode, record.context.regionCode, base.eventType],
       {
@@ -606,7 +764,20 @@ export class SqlMetricsStore {
     );
     if (record.context.visitorHash) {
       addVisitor(
-        visitors,
+        visitorsHourly,
+        [hour, record.context.visitorHash, record.context.countryCode, record.context.regionCode],
+        {
+          bucket: hour,
+          visitorHash: record.context.visitorHash,
+          countryCode: record.context.countryCode,
+          regionCode: record.context.regionCode,
+          firstSeenAt: record.occurredAt,
+          lastSeenAt: record.occurredAt,
+          eventCount: record.event.count
+        }
+      );
+      addVisitor(
+        visitorsDaily,
         [day, record.context.visitorHash, record.context.countryCode, record.context.regionCode],
         {
           bucket: day,
@@ -625,8 +796,10 @@ export class SqlMetricsStore {
     totals: Map<string, UsageAggregate>,
     hourly: Map<string, UsageAggregate>,
     daily: Map<string, UsageAggregate>,
+    geoHourly: Map<string, UsageAggregate>,
     geoDaily: Map<string, UsageAggregate>,
-    visitors: Map<string, VisitorAggregate>
+    visitorsHourly: Map<string, VisitorAggregate>,
+    visitorsDaily: Map<string, VisitorAggregate>
   ): void {
     for (const value of totals.values()) {
       this.adapter.run(UPSERT_TOTAL, [value.eventType, value.count, value.updatedAt]);
@@ -637,6 +810,15 @@ export class SqlMetricsStore {
     for (const value of daily.values()) {
       this.adapter.run(UPSERT_DAILY, [value.bucket!, value.eventType, value.count]);
     }
+    for (const value of geoHourly.values()) {
+      this.adapter.run(UPSERT_GEO_HOURLY, [
+        value.bucket!,
+        value.countryCode!,
+        value.regionCode!,
+        value.eventType,
+        value.count
+      ]);
+    }
     for (const value of geoDaily.values()) {
       this.adapter.run(UPSERT_GEO_DAILY, [
         value.bucket!,
@@ -646,7 +828,18 @@ export class SqlMetricsStore {
         value.count
       ]);
     }
-    for (const value of visitors.values()) {
+    for (const value of visitorsHourly.values()) {
+      this.adapter.run(UPSERT_VISITOR_HOURLY, [
+        value.bucket,
+        value.visitorHash,
+        value.countryCode,
+        value.regionCode,
+        value.firstSeenAt,
+        value.lastSeenAt,
+        value.eventCount
+      ]);
+    }
+    for (const value of visitorsDaily.values()) {
       this.adapter.run(UPSERT_VISITOR_DAILY, [
         value.bucket,
         value.visitorHash,
@@ -724,7 +917,8 @@ export class SqlMetricsStore {
       return;
     }
     const currentHour = utcHourBucket(now);
-    let cursor = this.readMetaNumber(availabilitySettledKey(target)) ?? start;
+    const storedCursor = this.readMetaNumber(availabilitySettledKey(target));
+    let cursor = storedCursor ?? start;
     cursor = Math.max(cursor, start);
     for (; cursor < currentHour; cursor += HOUR_MS) {
       const row = this.adapter.all<RawAvailabilityHourlyRow>(
@@ -746,7 +940,9 @@ export class SqlMetricsStore {
         row ? toNumber(row.websocket_latency_samples) : 0
       );
     }
-    this.writeMeta(availabilitySettledKey(target), cursor);
+    if (cursor !== storedCursor) {
+      this.writeMeta(availabilitySettledKey(target), cursor);
+    }
   }
 
   private upsertAvailabilityDay(

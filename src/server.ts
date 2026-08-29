@@ -26,6 +26,7 @@ export type SyncServerOptions = {
   metricsEnabled?: boolean;
   metricsDbPath?: string;
   ipHashSecret?: string;
+  trustProxyHeaders?: boolean;
   publicDirectory?: string;
   metricsService?: NodeMetricsService;
 };
@@ -49,7 +50,19 @@ export function createSyncServer(options: SyncServerOptions = {}): SyncServerRun
   const metricsSink = metricsService ? createFailOpenMetricsSink(metricsService) : undefined;
   const publicDirectory = resolve(options.publicDirectory ?? join(process.cwd(), "public"));
   const ipHashSecret = options.ipHashSecret ?? process.env.IP_HASH_SECRET ?? "";
+  const trustProxyHeaders = options.trustProxyHeaders ?? process.env.TRUST_PROXY_HEADERS === "true";
   let probeTimer: ReturnType<typeof setTimeout> | undefined;
+  let probesStopped = false;
+  const scheduleAvailabilityProbe = () => {
+    if (!metricsService || probesStopped) {
+      return;
+    }
+    probeTimer = scheduleNodeAvailabilityProbe(
+      metricsService,
+      publicOrigin,
+      scheduleAvailabilityProbe
+    );
+  };
   const hub = new RoomHubCore({ metricsSink });
   const webSocketServer = new WebSocketServer({
     noServer: true,
@@ -75,7 +88,11 @@ export function createSyncServer(options: SyncServerOptions = {}): SyncServerRun
 
   webSocketServer.on("connection", (webSocket, request) => {
     const socket = webSocket as unknown as WebSocket;
-    hub.attachSocket(socket, false, resolveNodeConnectionContext(request, ipHashSecret));
+    hub.attachSocket(
+      socket,
+      false,
+      resolveNodeConnectionContext(request, ipHashSecret, trustProxyHeaders)
+    );
     webSocket.on("message", (data, isBinary) => {
       const raw = isBinary ? data : data.toString("utf8");
       hub.handleSocketMessage(socket, raw).catch((error) => {
@@ -99,13 +116,15 @@ export function createSyncServer(options: SyncServerOptions = {}): SyncServerRun
             return;
           }
           if (metricsService) {
-            probeTimer = scheduleNodeAvailabilityProbe(metricsService, publicOrigin);
+            probesStopped = false;
+            scheduleAvailabilityProbe();
           }
           resolve({ host, port: address.port });
         });
       });
     },
     async stop() {
+      probesStopped = true;
       if (probeTimer) {
         clearTimeout(probeTimer);
         probeTimer = undefined;
@@ -254,12 +273,13 @@ function safeError(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
-function resolveNodeConnectionContext(
+export function resolveNodeConnectionContext(
   request: IncomingMessage,
-  ipHashSecret: string
+  ipHashSecret: string,
+  trustProxyHeaders = false
 ): ConnectionContext {
   const remoteAddress = normalizeIp(request.socket.remoteAddress);
-  if (!remoteAddress || !isLoopbackAddress(remoteAddress)) {
+  if (!remoteAddress || (!isLoopbackAddress(remoteAddress) && !trustProxyHeaders)) {
     return { source: "node", countryCode: "ZZ", regionCode: "", isProbe: false };
   }
   const ip = normalizeIp(request.headers["x-real-ip"]?.toString());
@@ -336,7 +356,8 @@ function sendStaticFile(
 
 function scheduleNodeAvailabilityProbe(
   metricsService: NodeMetricsService,
-  publicOrigin: string
+  publicOrigin: string,
+  scheduleNext: () => void
 ): ReturnType<typeof setTimeout> {
   const now = new Date();
   const next = new Date(now);
@@ -351,7 +372,7 @@ function scheduleNodeAvailabilityProbe(
     } catch (error) {
       console.error("Node availability probe failed", safeError(error));
     }
-    scheduleNodeAvailabilityProbe(metricsService, publicOrigin);
+    scheduleNext();
   }, Math.max(1, next.getTime() - now.getTime()));
   timer.unref?.();
   return timer;

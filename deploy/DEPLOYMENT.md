@@ -1,5 +1,7 @@
 # Self-hosted deployment
 
+**Important:** The smoke test scripts (`2.2-public-smoke.mjs` and `2.3-backend-isolation.mjs`) create real business calls (room creation, joins, messages) that will be recorded in usage statistics. Run them sparingly in production or consider using a separate test environment.
+
 The Node service runs from `/opt/simple-live-sync` and listens only on
 `127.0.0.1:8787`. Nginx owns public HTTP, HTTPS, WebSocket traffic, trusted
 client-IP headers, and GeoIP lookup for `sync.furry.mo.cn`. The Cloudflare
@@ -73,6 +75,11 @@ Supported application settings in
 | `METRICS_DB_PATH` | `/var/lib/simple-live-sync/metrics.sqlite` | Host/systemd SQLite path. Compose maps the same state directory to `/app/data`. |
 | `GEOIP_DB_PATH` | `/var/lib/GeoIP/GeoLite2-City.mmdb` | Host/systemd GeoIP database path. |
 | `IP_HASH_SECRET` | private random value | Salt for anonymous visitor hashes; required when metrics are enabled. |
+
+The Compose service sets `TRUST_PROXY_HEADERS=true` because port 8787 is
+published on host loopback only and Nginx overwrites every forwarded location
+header. Do not enable this setting when exposing the Node port directly or when
+running behind an untrusted proxy.
 
 Keep the database under `/var/lib/simple-live-sync`. Docker mounts this exact
 directory at `/app/data`; the systemd unit creates it with `StateDirectory=`.

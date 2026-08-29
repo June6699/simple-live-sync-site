@@ -199,13 +199,18 @@ export class RoomHubCore {
       this.sendError(socket, undefined, "payloadTooLarge", "message is larger than 1 MB");
       return;
     }
-    let message: SyncRequest;
+    let parsed: unknown;
     try {
-      message = JSON.parse(raw) as SyncRequest;
+      parsed = JSON.parse(raw);
     } catch {
       this.sendError(socket, undefined, "invalidJson", "message is not valid JSON");
       return;
     }
+    if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
+      this.sendError(socket, undefined, "invalidMessage", "message must be a JSON object");
+      return;
+    }
+    const message = parsed as SyncRequest;
     this.lastSeen.set(socket, Date.now());
     switch (message.type) {
       case "ping":
@@ -224,7 +229,7 @@ export class RoomHubCore {
         this.forwardContent(socket, message, message.type);
         return;
       case "leaveRoom":
-        this.removeSocket(socket);
+        this.detachSocketFromRoom(socket);
         return;
       default:
         this.sendError(socket, message.requestId, "unknownType", "unknown message type");
@@ -237,12 +242,8 @@ export class RoomHubCore {
       this.sendError(socket, message.requestId, "invalidClient", "client info is invalid");
       return;
     }
-    const connectionContext = this.connectionContexts.get(socket);
-    this.removeSocket(socket, false);
+    this.detachSocketFromRoom(socket, false);
     this.lastSeen.set(socket, Date.now());
-    if (connectionContext) {
-      this.connectionContexts.set(socket, connectionContext);
-    }
     const roomId = this.generateRoomId();
     const user = this.createRoomUser(info, true);
     this.rooms.set(roomId, new Set([socket]));
@@ -277,16 +278,26 @@ export class RoomHubCore {
       return;
     }
     const room = this.rooms.get(roomId)!;
+    const existingSession = this.sessions.get(socket);
+    if (existingSession?.roomId === roomId && room.has(socket)) {
+      this.send(socket, {
+        type: "roomJoined",
+        requestId: message.requestId,
+        roomId,
+        expiresIn: Math.max(
+          0,
+          Math.floor((this.roomExpiresAt.get(roomId)! - Date.now()) / 1000)
+        ),
+        user: existingSession.user
+      });
+      return;
+    }
     if (room.size >= this.maxRoomClients) {
       this.sendError(socket, message.requestId, "roomFull", "room is full");
       return;
     }
-    const connectionContext = this.connectionContexts.get(socket);
-    this.removeSocket(socket, false);
+    this.detachSocketFromRoom(socket, false);
     this.lastSeen.set(socket, Date.now());
-    if (connectionContext) {
-      this.connectionContexts.set(socket, connectionContext);
-    }
     const user = this.createRoomUser(info, false);
     room.add(socket);
     this.sessions.set(socket, { socket, user, roomId });
@@ -344,10 +355,14 @@ export class RoomHubCore {
   }
 
   removeSocket(socket: WebSocket, notify = true): void {
-    const roomId = this.findRoomBySocket(socket);
-    this.sessions.delete(socket);
+    this.detachSocketFromRoom(socket, notify);
     this.lastSeen.delete(socket);
     this.connectionContexts.delete(socket);
+  }
+
+  private detachSocketFromRoom(socket: WebSocket, notify = true): void {
+    const roomId = this.findRoomBySocket(socket);
+    this.sessions.delete(socket);
     if (!roomId) {
       return;
     }
@@ -377,8 +392,6 @@ export class RoomHubCore {
     for (const socket of room) {
       this.send(socket, { type: "roomDestroyed", roomId, reason });
       this.sessions.delete(socket);
-      this.lastSeen.delete(socket);
-      this.connectionContexts.delete(socket);
     }
     this.rooms.delete(roomId);
     this.roomCreators.delete(roomId);
