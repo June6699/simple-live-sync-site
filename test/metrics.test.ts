@@ -7,7 +7,9 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   createFailOpenMetricsSink,
   createMetricRecord,
+  HOUR_MS,
   parseMetricsRange,
+  utcDayBucket,
   type ConnectionContext,
   type MetricsEvent
 } from "../src/metrics.js";
@@ -200,33 +202,81 @@ describe("metrics storage", () => {
     adapter.close();
   });
 
-  it("falls back to daily tables when hourly tables are empty (backward compatibility)", () => {
+  it("preserves v1 geo data until hourly dimensions cover the full query window", () => {
     const adapter = new NodeSqliteAdapter(":memory:");
+    adapter.execute(`CREATE TABLE metrics_meta (
+      key TEXT PRIMARY KEY,
+      value TEXT NOT NULL
+    )`);
+    adapter.execute(`CREATE TABLE metrics_geo_daily (
+      bucket_start INTEGER NOT NULL,
+      country_code TEXT NOT NULL,
+      region_code TEXT NOT NULL,
+      event_type TEXT NOT NULL,
+      count INTEGER NOT NULL,
+      PRIMARY KEY (bucket_start, country_code, region_code, event_type)
+    )`);
+    adapter.execute(`CREATE TABLE metrics_visitors_daily (
+      bucket_start INTEGER NOT NULL,
+      visitor_hash TEXT NOT NULL,
+      country_code TEXT NOT NULL,
+      region_code TEXT NOT NULL,
+      first_seen_at INTEGER NOT NULL,
+      last_seen_at INTEGER NOT NULL,
+      event_count INTEGER NOT NULL,
+      PRIMARY KEY (bucket_start, visitor_hash, country_code, region_code)
+    )`);
+    const oldAt = Date.now();
+    const oldDay = utcDayBucket(oldAt);
+    const oldVisitor = "f".repeat(64);
+    adapter.run("INSERT INTO metrics_meta (key, value) VALUES ('schema_version', '1')");
+    adapter.run(
+      `INSERT INTO metrics_geo_daily
+       (bucket_start, country_code, region_code, event_type, count)
+       VALUES (?, 'US', 'CA', 'room_created', 1)`,
+      [oldDay]
+    );
+    adapter.run(
+      `INSERT INTO metrics_visitors_daily
+       (bucket_start, visitor_hash, country_code, region_code, first_seen_at, last_seen_at, event_count)
+       VALUES (?, ?, 'US', 'CA', ?, ?, 1)`,
+      [oldDay, oldVisitor, oldAt, oldAt]
+    );
+
     const store = new SqlMetricsStore(adapter);
-    const now = Date.parse("2026-08-20T12:05:00Z");
-    const context = {
+    const coverageStartedAt = Number(adapter.all<{ value: string }>(
+      "SELECT value FROM metrics_meta WHERE key = 'hourly_dimensions_coverage_started_at'"
+    )[0]?.value);
+    expect(coverageStartedAt).toBeGreaterThan(Math.floor(oldAt / HOUR_MS) * HOUR_MS);
+    const newAt = coverageStartedAt + HOUR_MS;
+    const newContext = {
       source: "node" as const,
-      visitorHash: "f".repeat(64),
+      visitorHash: "a".repeat(64),
       countryCode: "US",
-      regionCode: "CA"
+      regionCode: "NY"
     };
+    store.write([metric({ type: "room_joined" }, newContext, newAt)], {
+      receivedAt: newAt
+    });
 
-    // Write to daily tables only (simulating old database)
-    store.write([metric({ type: "room_created" }, context, now)]);
-
-    // Clear hourly tables to simulate v1 database
-    adapter.run("DELETE FROM metrics_geo_hourly");
-    adapter.run("DELETE FROM metrics_visitors_hourly");
-
-    // Query with hour granularity should fall back to daily data
-    const geo24h = store.queryGeo(parseMetricsRange("24h", now + 1_000));
-    expect(geo24h.countries).toEqual([
-      { countryCode: "US", calls: 1, uniqueVisitors: 1 }
+    const transitionRange = parseMetricsRange("24h", newAt + 1_000);
+    expect(store.queryGeo(transitionRange).countries).toEqual([
+      { countryCode: "US", calls: 2, uniqueVisitors: 2 }
     ]);
-    expect(geo24h.regions).toEqual([
-      { countryCode: "US", regionCode: "CA", calls: 1, uniqueVisitors: 1 }
-    ]);
-    expect(store.queryUniqueVisitors(parseMetricsRange("24h", now + 1_000))).toBe(1);
+    expect(store.queryUniqueVisitors(transitionRange)).toBe(2);
+
+    const coveredRange = parseMetricsRange("24h", coverageStartedAt + 24 * HOUR_MS);
+    expect(store.queryGeo(coveredRange)).toEqual(expect.objectContaining({
+      countries: [{ countryCode: "US", calls: 1, uniqueVisitors: 1 }],
+      regions: [{ countryCode: "US", regionCode: "NY", calls: 1, uniqueVisitors: 1 }]
+    }));
+    expect(adapter.all<{ count: number }>(
+      "SELECT count FROM metrics_geo_daily WHERE bucket_start = ? AND region_code = 'CA'",
+      [oldDay]
+    )[0]?.count).toBe(1);
+    expect(adapter.all<{ value: string }>(
+      "SELECT value FROM metrics_meta WHERE key = 'schema_version'"
+    )[0]?.value).toBe("2");
 
     adapter.close();
   });
@@ -280,21 +330,17 @@ describe("metrics storage", () => {
       )
     ], { receivedAt: now });
 
-    // Read meta before query
-    const metaBefore = adapter.all<{ key: string; value: string }>(
-      "SELECT key, value FROM metrics_meta WHERE key LIKE 'availability_settled:%'"
-    );
+    const changesBefore = adapter.all<{ changes: number }>(
+      "SELECT total_changes() AS changes"
+    )[0]?.changes;
 
-    // Public query should not write
-    store.queryAvailability(parseMetricsRange("24h", now + 1_000), target, now + 1_000);
+    const queryAt = now + HOUR_MS + 1_000;
+    store.queryAvailability(parseMetricsRange("24h", queryAt), target, queryAt);
 
-    // Read meta after query
-    const metaAfter = adapter.all<{ key: string; value: string }>(
-      "SELECT key, value FROM metrics_meta WHERE key LIKE 'availability_settled:%'"
-    );
-
-    // Meta should be unchanged
-    expect(metaAfter).toEqual(metaBefore);
+    const changesAfter = adapter.all<{ changes: number }>(
+      "SELECT total_changes() AS changes"
+    )[0]?.changes;
+    expect(changesAfter).toBe(changesBefore);
 
     adapter.close();
   });

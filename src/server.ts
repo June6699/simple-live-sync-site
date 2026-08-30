@@ -40,13 +40,23 @@ export function createSyncServer(options: SyncServerOptions = {}): SyncServerRun
   const host = options.host ?? "127.0.0.1";
   const port = options.port ?? 8787;
   const publicOrigin = normalizeOrigin(options.publicOrigin ?? DEFAULT_SERVICE_ORIGIN);
-  const metricsEnabled = options.metricsEnabled ?? process.env.METRICS_ENABLED === "true";
-  const metricsService = options.metricsService ?? (metricsEnabled
-    ? new NodeMetricsService({
-        path: options.metricsDbPath ?? process.env.METRICS_DB_PATH ?? "/var/lib/simple-live-sync/metrics.sqlite",
-        onError: (error) => console.error("Metrics write failed", safeError(error))
-      })
-    : undefined);
+  const metricsEnabled = options.metricsEnabled ??
+    (options.metricsService !== undefined || process.env.METRICS_ENABLED === "true");
+  let metricsService: NodeMetricsService | undefined;
+  if (metricsEnabled) {
+    if (options.metricsService) {
+      metricsService = options.metricsService;
+    } else {
+      try {
+        metricsService = new NodeMetricsService({
+          path: options.metricsDbPath ?? process.env.METRICS_DB_PATH ?? "/var/lib/simple-live-sync/metrics.sqlite",
+          onError: (error) => console.error("Metrics write failed", safeError(error))
+        });
+      } catch (error) {
+        console.error("Metrics initialization failed", safeError(error));
+      }
+    }
+  }
   const metricsSink = metricsService ? createFailOpenMetricsSink(metricsService) : undefined;
   const publicDirectory = resolve(options.publicDirectory ?? join(process.cwd(), "public"));
   const ipHashSecret = options.ipHashSecret ?? process.env.IP_HASH_SECRET ?? "";
@@ -210,8 +220,13 @@ function handleHttpRequest(
     return;
   }
   if (isStatsApiPath(url.pathname)) {
+    if (request.method !== "GET" && request.method !== "HEAD") {
+      response.setHeader("allow", "GET, HEAD");
+      sendJson(response, 405, { status: false, message: "method not allowed" });
+      return;
+    }
     if (!metricsEnabled || !metricsService) {
-      sendJson(response, 503, { status: false, message: "statistics are temporarily unavailable" }, STATS_CACHE_CONTROL);
+      sendJson(response, 503, { status: false, message: "statistics are temporarily unavailable" });
       return;
     }
     try {
@@ -219,7 +234,7 @@ function handleHttpRequest(
       sendJson(response, result.status, result.payload, result.status === 200 ? STATS_CACHE_CONTROL : "no-store");
     } catch (error) {
       console.error("Stats API failed", safeError(error));
-      sendJson(response, 503, { status: false, message: "statistics are temporarily unavailable" }, STATS_CACHE_CONTROL);
+      sendJson(response, 503, { status: false, message: "statistics are temporarily unavailable" });
     }
     return;
   }

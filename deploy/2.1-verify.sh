@@ -42,10 +42,6 @@ if [[ "$METRICS_ENABLED" == "true" ]]; then
 fi
 docker compose run --rm --no-deps sync "${http_smoke_args[@]}"
 docker compose run --rm --no-deps sync \
-  node deploy/2.2-public-smoke.mjs wss://sync.furry.mo.cn/sync
-docker compose run --rm --no-deps sync \
-  node deploy/2.3-backend-isolation.mjs \
-  wss://sync.furry.mo.cn/sync \
-  wss://simple-live-sync.3439394104.workers.dev/sync
+  node deploy/2.2-public-smoke.mjs wss://sync.furry.mo.cn/sync --ping-only
 
 printf '\nPublic verification passed.\n'

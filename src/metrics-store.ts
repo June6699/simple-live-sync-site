@@ -219,6 +219,8 @@ const UPSERT_VISITOR_HOURLY = `INSERT INTO metrics_visitors_hourly
     last_seen_at = MAX(metrics_visitors_hourly.last_seen_at, excluded.last_seen_at),
     event_count = metrics_visitors_hourly.event_count + excluded.event_count`;
 
+const HOURLY_DIMENSIONS_COVERAGE_KEY = "hourly_dimensions_coverage_started_at";
+
 export class SqlMetricsStore {
   readonly source: MetricsSource;
   private readonly retentionMs: number;
@@ -246,6 +248,7 @@ export class SqlMetricsStore {
     for (const statement of METRICS_SCHEMA_STATEMENTS.slice(1)) {
       this.adapter.execute(statement);
     }
+    this.initializeHourlyDimensionsCoverage();
     if (storedVersion !== METRICS_SCHEMA_VERSION) {
       this.writeMeta("schema_version", METRICS_SCHEMA_VERSION);
     }
@@ -386,39 +389,24 @@ export class SqlMetricsStore {
     const granularity = range.granularity === "hour" ? "hour" : "day";
     const normalized = normalizeRange(range, granularity);
 
-    if (granularity === "hour") {
-      // Try hourly table first
-      const hourlyResult = this.adapter.all<{ visitors: MetricsSqlValue }>(
+    if (granularity === "hour" && this.hasHourlyDimensionsCoverage(normalized)) {
+      const row = this.adapter.all<{ visitors: MetricsSqlValue }>(
         `SELECT COUNT(DISTINCT visitor_hash) AS visitors
          FROM metrics_visitors_hourly
          WHERE bucket_start >= ? AND bucket_start < ?`,
         [normalized.from, normalized.to]
       )[0];
-      const hourlyCount = toNumber(hourlyResult?.visitors ?? 0);
-
-      // If hourly table has data, use it
-      if (hourlyCount > 0) {
-        return hourlyCount;
-      }
-
-      // Fallback to daily table for backward compatibility
-      const dayFrom = utcDayBucket(normalized.from);
-      const dayTo = utcDayBucket(normalized.to - 1) + DAY_MS;
-      const dailyResult = this.adapter.all<{ visitors: MetricsSqlValue }>(
-        `SELECT COUNT(DISTINCT visitor_hash) AS visitors
-         FROM metrics_visitors_daily
-         WHERE bucket_start >= ? AND bucket_start < ?`,
-        [dayFrom, dayTo]
-      )[0];
-      return toNumber(dailyResult?.visitors ?? 0);
+      return toNumber(row?.visitors ?? 0);
     }
 
-    // For day granularity, use daily table directly
+    const dailyRange = granularity === "hour"
+      ? overlappingDayRange(normalized)
+      : normalized;
     const row = this.adapter.all<{ visitors: MetricsSqlValue }>(
       `SELECT COUNT(DISTINCT visitor_hash) AS visitors
        FROM metrics_visitors_daily
        WHERE bucket_start >= ? AND bucket_start < ?`,
-      [normalized.from, normalized.to]
+      [dailyRange.from, dailyRange.to]
     )[0];
     return toNumber(row?.visitors ?? 0);
   }
@@ -432,8 +420,7 @@ export class SqlMetricsStore {
     let callsByRegion: RawGeoRegionRow[];
     let visitorsByRegion: RawGeoRegionVisitorsRow[];
 
-    if (granularity === "hour") {
-      // Try hourly tables first
+    if (granularity === "hour" && this.hasHourlyDimensionsCoverage(normalized)) {
       callsByCountry = this.adapter.all<RawGeoCountryRow>(
         `SELECT country_code, SUM(count) AS calls
          FROM metrics_geo_hourly
@@ -441,92 +428,58 @@ export class SqlMetricsStore {
          GROUP BY country_code`,
         [normalized.from, normalized.to]
       );
-
-      // If hourly table has data, use it
-      if (callsByCountry.length > 0) {
-        visitorsByCountry = this.adapter.all<RawGeoCountryVisitorsRow>(
-          `SELECT country_code, COUNT(DISTINCT visitor_hash) AS visitors
-           FROM metrics_visitors_hourly
-           WHERE bucket_start >= ? AND bucket_start < ?
-           GROUP BY country_code`,
-          [normalized.from, normalized.to]
-        );
-        callsByRegion = this.adapter.all<RawGeoRegionRow>(
-          `SELECT country_code, region_code, SUM(count) AS calls
-           FROM metrics_geo_hourly
-           WHERE bucket_start >= ? AND bucket_start < ? AND region_code <> ''
-           GROUP BY country_code, region_code`,
-          [normalized.from, normalized.to]
-        );
-        visitorsByRegion = this.adapter.all<RawGeoRegionVisitorsRow>(
-          `SELECT country_code, region_code, COUNT(DISTINCT visitor_hash) AS visitors
-           FROM metrics_visitors_hourly
-           WHERE bucket_start >= ? AND bucket_start < ? AND region_code <> ''
-           GROUP BY country_code, region_code`,
-          [normalized.from, normalized.to]
-        );
-      } else {
-        // Fallback to daily tables for backward compatibility
-        const dayFrom = utcDayBucket(normalized.from);
-        const dayTo = utcDayBucket(normalized.to - 1) + DAY_MS;
-        callsByCountry = this.adapter.all<RawGeoCountryRow>(
-          `SELECT country_code, SUM(count) AS calls
-           FROM metrics_geo_daily
-           WHERE bucket_start >= ? AND bucket_start < ?
-           GROUP BY country_code`,
-          [dayFrom, dayTo]
-        );
-        visitorsByCountry = this.adapter.all<RawGeoCountryVisitorsRow>(
-          `SELECT country_code, COUNT(DISTINCT visitor_hash) AS visitors
-           FROM metrics_visitors_daily
-           WHERE bucket_start >= ? AND bucket_start < ?
-           GROUP BY country_code`,
-          [dayFrom, dayTo]
-        );
-        callsByRegion = this.adapter.all<RawGeoRegionRow>(
-          `SELECT country_code, region_code, SUM(count) AS calls
-           FROM metrics_geo_daily
-           WHERE bucket_start >= ? AND bucket_start < ? AND region_code <> ''
-           GROUP BY country_code, region_code`,
-          [dayFrom, dayTo]
-        );
-        visitorsByRegion = this.adapter.all<RawGeoRegionVisitorsRow>(
-          `SELECT country_code, region_code, COUNT(DISTINCT visitor_hash) AS visitors
-           FROM metrics_visitors_daily
-           WHERE bucket_start >= ? AND bucket_start < ? AND region_code <> ''
-           GROUP BY country_code, region_code`,
-          [dayFrom, dayTo]
-        );
-      }
-    } else {
-      // For day granularity, use daily tables directly
-      callsByCountry = this.adapter.all<RawGeoCountryRow>(
-        `SELECT country_code, SUM(count) AS calls
-         FROM metrics_geo_daily
-         WHERE bucket_start >= ? AND bucket_start < ?
-         GROUP BY country_code`,
-        [normalized.from, normalized.to]
-      );
       visitorsByCountry = this.adapter.all<RawGeoCountryVisitorsRow>(
         `SELECT country_code, COUNT(DISTINCT visitor_hash) AS visitors
-         FROM metrics_visitors_daily
+         FROM metrics_visitors_hourly
          WHERE bucket_start >= ? AND bucket_start < ?
          GROUP BY country_code`,
         [normalized.from, normalized.to]
       );
       callsByRegion = this.adapter.all<RawGeoRegionRow>(
         `SELECT country_code, region_code, SUM(count) AS calls
-         FROM metrics_geo_daily
+         FROM metrics_geo_hourly
          WHERE bucket_start >= ? AND bucket_start < ? AND region_code <> ''
          GROUP BY country_code, region_code`,
         [normalized.from, normalized.to]
       );
       visitorsByRegion = this.adapter.all<RawGeoRegionVisitorsRow>(
         `SELECT country_code, region_code, COUNT(DISTINCT visitor_hash) AS visitors
-         FROM metrics_visitors_daily
+         FROM metrics_visitors_hourly
          WHERE bucket_start >= ? AND bucket_start < ? AND region_code <> ''
          GROUP BY country_code, region_code`,
         [normalized.from, normalized.to]
+      );
+    } else {
+      const dailyRange = granularity === "hour"
+        ? overlappingDayRange(normalized)
+        : normalized;
+      callsByCountry = this.adapter.all<RawGeoCountryRow>(
+        `SELECT country_code, SUM(count) AS calls
+         FROM metrics_geo_daily
+         WHERE bucket_start >= ? AND bucket_start < ?
+         GROUP BY country_code`,
+        [dailyRange.from, dailyRange.to]
+      );
+      visitorsByCountry = this.adapter.all<RawGeoCountryVisitorsRow>(
+        `SELECT country_code, COUNT(DISTINCT visitor_hash) AS visitors
+         FROM metrics_visitors_daily
+         WHERE bucket_start >= ? AND bucket_start < ?
+         GROUP BY country_code`,
+        [dailyRange.from, dailyRange.to]
+      );
+      callsByRegion = this.adapter.all<RawGeoRegionRow>(
+        `SELECT country_code, region_code, SUM(count) AS calls
+         FROM metrics_geo_daily
+         WHERE bucket_start >= ? AND bucket_start < ? AND region_code <> ''
+         GROUP BY country_code, region_code`,
+        [dailyRange.from, dailyRange.to]
+      );
+      visitorsByRegion = this.adapter.all<RawGeoRegionVisitorsRow>(
+        `SELECT country_code, region_code, COUNT(DISTINCT visitor_hash) AS visitors
+         FROM metrics_visitors_daily
+         WHERE bucket_start >= ? AND bucket_start < ? AND region_code <> ''
+         GROUP BY country_code, region_code`,
+        [dailyRange.from, dailyRange.to]
       );
     }
 
@@ -1010,6 +963,34 @@ export class SqlMetricsStore {
     );
   }
 
+  private initializeHourlyDimensionsCoverage(): void {
+    if (this.readMetaNumber(HOURLY_DIMENSIONS_COVERAGE_KEY) !== undefined) {
+      return;
+    }
+    const earliestHourly = nullableNumber(
+      this.adapter.all<{ bucket: MetricsSqlValue }>(
+        "SELECT MIN(bucket_start) AS bucket FROM metrics_geo_hourly"
+      )[0]?.bucket
+    );
+    if (earliestHourly !== undefined) {
+      // The first V2 bucket may contain only the post-upgrade part of an hour.
+      this.writeMeta(HOURLY_DIMENSIONS_COVERAGE_KEY, earliestHourly + HOUR_MS);
+      return;
+    }
+    const hasLegacyDailyData = this.adapter.all<{ present: MetricsSqlValue }>(
+      "SELECT 1 AS present FROM metrics_geo_daily LIMIT 1"
+    ).length > 0;
+    this.writeMeta(
+      HOURLY_DIMENSIONS_COVERAGE_KEY,
+      hasLegacyDailyData ? utcHourBucket(Date.now()) + HOUR_MS : 0
+    );
+  }
+
+  private hasHourlyDimensionsCoverage(range: MetricsRange): boolean {
+    const coverageStartedAt = this.readMetaNumber(HOURLY_DIMENSIONS_COVERAGE_KEY);
+    return coverageStartedAt !== undefined && range.from >= coverageStartedAt;
+  }
+
   private readMetaNumber(key: string): number | undefined {
     const row = this.adapter.all<{ value: MetricsSqlValue }>(
       "SELECT value FROM metrics_meta WHERE key = ?",
@@ -1210,6 +1191,15 @@ function normalizeRange(range: MetricsRange, granularity: MetricsGranularity): M
     from: Math.floor(range.from / unit) * unit,
     to: Math.ceil(range.to / unit) * unit,
     granularity,
+    preset: range.preset
+  };
+}
+
+function overlappingDayRange(range: MetricsRange): MetricsRange {
+  return {
+    from: utcDayBucket(range.from),
+    to: utcDayBucket(range.to - 1) + DAY_MS,
+    granularity: "day",
     preset: range.preset
   };
 }

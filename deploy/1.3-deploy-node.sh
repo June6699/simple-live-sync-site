@@ -115,6 +115,6 @@ if [[ "$METRICS_ENABLED" == "true" ]]; then
   http_smoke_args+=(--expect-metrics)
 fi
 "${http_smoke_args[@]}"
-node deploy/2.2-public-smoke.mjs "wss://$DOMAIN/sync"
+node deploy/2.2-public-smoke.mjs "wss://$DOMAIN/sync" --ping-only
 
 printf 'Node deployment completed: https://%s\n' "$DOMAIN"

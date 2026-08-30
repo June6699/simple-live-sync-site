@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import WebSocket, { type RawData } from "ws";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -18,6 +18,7 @@ let metricsDirectory: string | undefined;
 afterEach(async () => {
   await runtime?.stop();
   runtime = undefined;
+  vi.restoreAllMocks();
   if (metricsDirectory) {
     rmSync(metricsDirectory, { recursive: true, force: true });
     metricsDirectory = undefined;
@@ -90,7 +91,6 @@ describe("Node sync server", () => {
       host: "127.0.0.1",
       port: 0,
       publicOrigin: "http://127.0.0.1",
-      metricsEnabled: true,
       metricsService,
       ipHashSecret: "server-test-secret-which-is-long-enough-123"
     });
@@ -98,6 +98,12 @@ describe("Node sync server", () => {
     const origin = `http://127.0.0.1:${address.port}`;
     expect((await fetch(`${origin}/stats`)).status).toBe(200);
     expect((await fetch(`${origin}/assets/maps/china-adm1.geojson`)).status).toBe(200);
+    const methodNotAllowed = await fetch(`${origin}/api/stats/summary`, {
+      method: "POST"
+    });
+    expect(methodNotAllowed.status).toBe(405);
+    expect(methodNotAllowed.headers.get("allow")).toBe("GET, HEAD");
+    expect(methodNotAllowed.headers.get("cache-control")).toBe("no-store");
     const summaryBefore = await (await fetch(`${origin}/api/stats/summary`)).json() as { totalCalls: number };
     expect(summaryBefore.totalCalls).toBe(0);
 
@@ -121,6 +127,57 @@ describe("Node sync server", () => {
     }
     const summaryAfter = await waitForTotalCalls(origin, 2);
     expect(summaryAfter.totalCalls).toBe(2);
+  });
+
+  it("keeps sync available when metrics initialization fails", async () => {
+    metricsDirectory = mkdtempSync(join(tmpdir(), "simple-live-sync-invalid-metrics-"));
+    const error = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    runtime = createSyncServer({
+      host: "127.0.0.1",
+      port: 0,
+      publicOrigin: "http://127.0.0.1",
+      metricsEnabled: true,
+      metricsDbPath: metricsDirectory
+    });
+    const address = await runtime.start();
+    const origin = `http://127.0.0.1:${address.port}`;
+
+    expect((await fetch(`${origin}/health`)).status).toBe(200);
+    const stats = await fetch(`${origin}/api/stats/summary`);
+    expect(stats.status).toBe(503);
+    expect(stats.headers.get("cache-control")).toBe("no-store");
+    expect(error).toHaveBeenCalledWith(
+      "Metrics initialization failed",
+      expect.any(String)
+    );
+  });
+
+  it("does not use an injected metrics service when statistics are disabled", async () => {
+    const metricsService = new NodeMetricsService({ path: ":memory:", maxBatchSize: 1 });
+    try {
+      runtime = createSyncServer({
+        host: "127.0.0.1",
+        port: 0,
+        publicOrigin: "http://127.0.0.1",
+        metricsEnabled: false,
+        metricsService
+      });
+      const address = await runtime.start();
+      const origin = `http://127.0.0.1:${address.port}`;
+      await websocketRequest(`ws://127.0.0.1:${address.port}/sync`, {
+        type: "createRoom",
+        payload: { app: "test", platform: "node", version: "1" }
+      }, "roomCreated");
+
+      expect(metricsService.store.queryTotals()).toHaveLength(0);
+      const stats = await fetch(`${origin}/api/stats/summary`);
+      expect(stats.status).toBe(503);
+      expect(stats.headers.get("cache-control")).toBe("no-store");
+    } finally {
+      await runtime?.stop();
+      runtime = undefined;
+      metricsService.close();
+    }
   });
 });
 

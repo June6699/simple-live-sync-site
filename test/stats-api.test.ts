@@ -1,5 +1,6 @@
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
+import worker from "../src/index.js";
 import { createMetricRecord } from "../src/metrics.js";
 import { NodeSqliteAdapter } from "../src/metrics-node.js";
 import { SqlMetricsStore } from "../src/metrics-store.js";
@@ -107,5 +108,55 @@ describe("stats API payloads", () => {
         target
       ).status
     ).toBe(400);
+    expect(
+      queryStatsApi(
+        store,
+        new URL("https://example.test/api/stats/geo?range=24h&range=90d"),
+        target
+      ).status
+    ).toBe(400);
+  });
+
+  it("does not classify storage TypeErrors as client input errors", () => {
+    const store = {
+      querySummary() {
+        throw new TypeError("invalid stored metric");
+      }
+    } as unknown as SqlMetricsStore;
+    expect(() => queryStatsApi(
+      store,
+      new URL("https://example.test/api/stats/summary"),
+      "https://example.test"
+    )).toThrow("invalid stored metric");
+  });
+
+  it("does not access the metrics Durable Object when statistics are disabled", async () => {
+    const idFromName = vi.fn();
+    const get = vi.fn();
+    const env = {
+      METRICS_ENABLED: "false",
+      METRICS: { idFromName, get }
+    } as never;
+
+    const methodNotAllowed = await worker.fetch(
+      new Request("https://example.test/api/stats/summary", { method: "POST" }),
+      env
+    );
+    expect(methodNotAllowed.status).toBe(405);
+    expect(methodNotAllowed.headers.get("allow")).toBe("GET, HEAD");
+    expect(methodNotAllowed.headers.get("cache-control")).toBe("no-store");
+
+    const response = await worker.fetch(
+      new Request("https://example.test/api/stats/summary"),
+      env
+    );
+    expect(response.status).toBe(503);
+    expect(response.headers.get("cache-control")).toBe("no-store");
+    expect(idFromName).not.toHaveBeenCalled();
+    expect(get).not.toHaveBeenCalled();
+
+    const waitUntil = vi.fn();
+    await worker.scheduled({} as never, env, { waitUntil } as never);
+    expect(waitUntil).not.toHaveBeenCalled();
   });
 });

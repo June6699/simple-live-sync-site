@@ -40,9 +40,6 @@ if [[ "$METRICS_ENABLED" == "true" ]]; then
   http_smoke_args+=(--expect-metrics)
 fi
 "${http_smoke_args[@]}"
-node deploy/2.2-public-smoke.mjs wss://sync.furry.mo.cn/sync
-node deploy/2.3-backend-isolation.mjs \
-  wss://sync.furry.mo.cn/sync \
-  wss://simple-live-sync.3439394104.workers.dev/sync
+node deploy/2.2-public-smoke.mjs wss://sync.furry.mo.cn/sync --ping-only
 
 printf '\nNode public verification passed.\n'

@@ -94,6 +94,17 @@ export default {
       return json(buildHealthPayload());
     }
     if (isStatsApiPath(url.pathname)) {
+      const methodError = statsMethodError(request.method);
+      if (methodError) {
+        return methodError;
+      }
+      if (!metricsEnabled(env)) {
+        return json(
+          { status: false, message: "statistics are temporarily unavailable" },
+          503,
+          "no-store"
+        );
+      }
       try {
         return await metricsStub(env).fetch(request);
       } catch (error) {
@@ -101,7 +112,7 @@ export default {
         return json(
           { status: false, message: "statistics are temporarily unavailable" },
           503,
-          STATS_CACHE_CONTROL
+          "no-store"
         );
       }
     }
@@ -124,6 +135,9 @@ export default {
   },
 
   async scheduled(_controller: ScheduledController, env: Env, ctx: ExecutionContext): Promise<void> {
+    if (!metricsEnabled(env)) {
+      return;
+    }
     ctx.waitUntil(
       metricsStub(env)
         .fetch("https://metrics.internal/internal/probe", { method: "POST" })
@@ -560,16 +574,13 @@ export class RoomHub {
 }
 
 export class MetricsHub {
-  private readonly store: SqlMetricsStore;
+  private store?: SqlMetricsStore;
   private readonly availabilityTarget: string;
 
   constructor(
     private readonly state: DurableObjectState,
     private readonly env: Env
   ) {
-    this.store = new SqlMetricsStore(new DurableObjectSqlAdapter(state.storage), {
-      source: "cloudflare"
-    });
     this.availabilityTarget = normalizeSelfOrigin(
       env.SELF_ORIGIN ?? "https://simple-live-sync.3439394104.workers.dev"
     );
@@ -593,7 +604,7 @@ export class MetricsHub {
         if (!body.event) {
           throw new TypeError("metrics event is required");
         }
-        this.store.write([
+        this.metricsStore().write([
           createMetricRecord(body.event, body.context, body.occurredAt ?? Date.now())
         ]);
         return new Response(null, { status: 204 });
@@ -610,7 +621,7 @@ export class MetricsHub {
       }
       const occurredAt = Date.now();
       const event = await runCloudflareAvailabilityProbe(this.availabilityTarget);
-      this.store.write(
+      this.metricsStore().write(
         [
           createMetricRecord(
             event,
@@ -623,10 +634,33 @@ export class MetricsHub {
       return json({ status: true, availability: event });
     }
     if (isStatsApiPath(url.pathname)) {
-      const result = queryStatsApi(this.store, url, this.availabilityTarget);
-      return json(result.payload, result.status, STATS_CACHE_CONTROL);
+      const methodError = statsMethodError(request.method);
+      if (methodError) {
+        return methodError;
+      }
+      if (!metricsEnabled(this.env)) {
+        return json(
+          { status: false, message: "statistics are temporarily unavailable" },
+          503,
+          "no-store"
+        );
+      }
+      const result = queryStatsApi(this.metricsStore(), url, this.availabilityTarget);
+      return json(
+        result.payload,
+        result.status,
+        result.status === 200 ? STATS_CACHE_CONTROL : "no-store"
+      );
     }
     return json({ status: false, message: "not found" }, 404);
+  }
+
+  private metricsStore(): SqlMetricsStore {
+    this.store ??= new SqlMetricsStore(
+      new DurableObjectSqlAdapter(this.state.storage),
+      { source: "cloudflare" }
+    );
+    return this.store;
   }
 }
 
@@ -1049,6 +1083,19 @@ function json(payload: unknown, status = 200, cacheControl = "no-store"): Respon
       "cache-control": cacheControl
     }
   });
+}
+
+function statsMethodError(method: string): Response | undefined {
+  if (method === "GET" || method === "HEAD") {
+    return undefined;
+  }
+  const response = json(
+    { status: false, message: "method not allowed" },
+    405,
+    "no-store"
+  );
+  response.headers.set("allow", "GET, HEAD");
+  return response;
 }
 
 function parseClientInfo(raw: unknown): ClientInfo | null {

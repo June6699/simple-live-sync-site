@@ -82,7 +82,7 @@ export function queryStatsApi(
         return { status: 404, payload: { status: false, message: "not found" } };
     }
   } catch (error) {
-    if (error instanceof MetricsRangeError || error instanceof TypeError) {
+    if (error instanceof MetricsRangeError) {
       return {
         status: 400,
         payload: { status: false, message: error.message }
@@ -106,7 +106,11 @@ function readRange<const Values extends readonly string[]>(
   fallback: Values[number]
 ): Values[number] {
   rejectUnexpectedParameters(parameters, ["range"]);
-  const value = parameters.get("range") ?? fallback;
+  const values = parameters.getAll("range");
+  if (values.length > 1) {
+    throw new MetricsRangeError("query parameter must not be repeated: range");
+  }
+  const value = values[0] ?? fallback;
   if (!(allowed as readonly string[]).includes(value)) {
     throw new MetricsRangeError(`unsupported metrics range: ${value}`);
   }

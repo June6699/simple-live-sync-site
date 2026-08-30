@@ -1,7 +1,5 @@
 # Self-hosted deployment
 
-**Important:** The smoke test scripts (`2.2-public-smoke.mjs` and `2.3-backend-isolation.mjs`) create real business calls (room creation, joins, messages) that will be recorded in usage statistics. Run them sparingly in production or consider using a separate test environment.
-
 The Node service runs from `/opt/simple-live-sync` and listens only on
 `127.0.0.1:8787`. Nginx owns public HTTP, HTTPS, WebSocket traffic, trusted
 client-IP headers, and GeoIP lookup for `sync.furry.mo.cn`. The Cloudflare
@@ -139,15 +137,17 @@ docker compose ps
 docker compose logs --tail=100 sync
 curl https://sync.furry.mo.cn/health?format=json
 node deploy/2.6-http-smoke.mjs https://sync.furry.mo.cn --expect-metrics
-node deploy/2.2-public-smoke.mjs wss://sync.furry.mo.cn/sync
+node deploy/2.2-public-smoke.mjs wss://sync.furry.mo.cn/sync --ping-only
 bash deploy/0.2-backup-metrics.sh
 ```
 
 The HTTP smoke verifies the homepage, `status:true` health response, and,
-when requested, `/api/stats`. The WebSocket smoke verifies ping, room creation,
-room join, and all four synchronization actions. Monitoring probes must be
-identified as probes by the application so they are excluded from business
-call totals.
+when requested, `/api/stats`. Automated deployment and verification use the
+WebSocket smoke's `--ping-only` mode, which does not create business-call
+metrics. Running `2.2-public-smoke.mjs` without that flag verifies room creation,
+room join, and all four synchronization actions, but records six real business
+calls. `2.3-backend-isolation.mjs` records one room creation on each backend, so
+both full checks are manual, explicit production diagnostics.
 
 Container health checks show current process health but do not provide an
 independent uptime record. For external availability evidence, run both the

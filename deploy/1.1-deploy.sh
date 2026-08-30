@@ -119,6 +119,6 @@ if [[ "$METRICS_ENABLED" == "true" ]]; then
 fi
 docker compose run --rm --no-deps sync "${http_smoke_args[@]}"
 docker compose run --rm --no-deps sync \
-  node deploy/2.2-public-smoke.mjs "wss://$DOMAIN/sync"
+  node deploy/2.2-public-smoke.mjs "wss://$DOMAIN/sync" --ping-only
 
 printf 'Deployment completed: https://%s\n' "$DOMAIN"

@@ -32,11 +32,16 @@ export class NodeSqliteAdapter implements MetricsSqlAdapter {
   constructor(path: string) {
     prepareDatabaseDirectory(path);
     this.database = new DatabaseSync(path);
-    this.database.exec("PRAGMA journal_mode = WAL");
-    this.database.exec("PRAGMA synchronous = NORMAL");
-    this.database.exec("PRAGMA busy_timeout = 5000");
-    if (path !== ":memory:") {
-      chmodSync(path, 0o600);
+    try {
+      this.database.exec("PRAGMA journal_mode = WAL");
+      this.database.exec("PRAGMA synchronous = NORMAL");
+      this.database.exec("PRAGMA busy_timeout = 5000");
+      if (path !== ":memory:") {
+        chmodSync(path, 0o600);
+      }
+    } catch (error) {
+      this.database.close();
+      throw error;
     }
   }
 
@@ -84,11 +89,16 @@ export class NodeMetricsService implements MetricsSink {
 
   constructor(options: NodeMetricsOptions) {
     this.adapter = new NodeSqliteAdapter(options.path);
-    this.store = new SqlMetricsStore(this.adapter, {
-      source: options.source ?? "node",
-      retentionMs: options.retentionMs,
-      cleanupIntervalMs: options.cleanupIntervalMs
-    });
+    try {
+      this.store = new SqlMetricsStore(this.adapter, {
+        source: options.source ?? "node",
+        retentionMs: options.retentionMs,
+        cleanupIntervalMs: options.cleanupIntervalMs
+      });
+    } catch (error) {
+      this.adapter.close();
+      throw error;
+    }
     this.flushIntervalMs = options.flushIntervalMs ?? 5_000;
     this.maxBatchSize = options.maxBatchSize ?? 100;
     this.maxQueueSize = options.maxQueueSize ?? 10_000;
