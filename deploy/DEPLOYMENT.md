@@ -21,7 +21,7 @@ install -d -m 0750 /var/lib/simple-live-sync
 Copy `deploy/simple-live-sync.env.example` to
 `/etc/simple-live-sync/simple-live-sync.env`, set mode `0600`, generate a
 private `IP_HASH_SECRET` of at least 32 random characters, and only then set
-`METRICS_ENABLED=true`:
+`METRICS_ENABLED=true` (the default):
 
 ```bash
 install -m 0600 deploy/simple-live-sync.env.example \
@@ -69,7 +69,7 @@ Supported application settings in
 | Variable | Production value | Purpose |
 | --- | --- | --- |
 | `PUBLIC_ORIGIN` | `https://sync.furry.mo.cn` | Public URL used by the Node server. |
-| `METRICS_ENABLED` | `true` or `false` | Fail-open statistics switch. |
+| `METRICS_ENABLED` | `true` or `false` (default `true`) | Fail-open statistics switch. |
 | `METRICS_DB_PATH` | `/var/lib/simple-live-sync/metrics.sqlite` | Host/systemd SQLite path. Compose maps the same state directory to `/app/data`. |
 | `GEOIP_DB_PATH` | `/var/lib/GeoIP/GeoLite2-City.mmdb` | Host/systemd GeoIP database path. |
 | `IP_HASH_SECRET` | private random value | Salt for anonymous visitor hashes; required when metrics are enabled. |

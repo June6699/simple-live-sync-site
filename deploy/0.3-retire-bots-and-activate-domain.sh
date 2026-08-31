@@ -17,16 +17,21 @@ systemctl disable --now xianyu-weekly-report.timer
 tmux kill-session -t wechat-bot 2>/dev/null || true
 
 install -d -m 0750 /etc/simple-live-sync
+existing_secret=""
+if [[ -f "$ENV_FILE" ]]; then
+  existing_secret="$(sed -n 's/^IP_HASH_SECRET=//p' "$ENV_FILE" | head -n 1)"
+fi
+if [[ -z "$existing_secret" ]]; then
+  existing_secret="$(openssl rand -hex 32)"
+fi
 cat >"$ENV_FILE" <<ENV
 PUBLIC_ORIGIN=https://${DOMAIN}
 METRICS_ENABLED=true
 METRICS_DB_PATH=/var/lib/simple-live-sync/metrics.sqlite
 GEOIP_DB_PATH=/var/lib/GeoIP/GeoLite2-City.mmdb
+IP_HASH_SECRET=${existing_secret}
 ENV
 chmod 0600 "$ENV_FILE"
-if ! grep -q '^IP_HASH_SECRET=' "$ENV_FILE"; then
-  printf 'IP_HASH_SECRET=%s\n' "$(openssl rand -hex 32)" >>"$ENV_FILE"
-fi
 
 cat >"$NGINX_FILE" <<'NGINX'
 server {
