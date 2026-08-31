@@ -94,4 +94,12 @@ sed -i "s/__DOMAIN__/${DOMAIN}/g" "$NGINX_FILE"
 systemctl restart simple-live-sync.service
 nginx -t
 systemctl reload nginx
-curl --fail --silent --show-error -H "Host: ${DOMAIN}" http://127.0.0.1/health?format=json
+for attempt in {1..10}; do
+  if curl --fail --silent --show-error -H "Host: ${DOMAIN}" http://127.0.0.1/health?format=json; then
+    exit 0
+  fi
+  sleep 1
+done
+
+printf 'The service did not become ready behind Nginx.\n' >&2
+exit 1

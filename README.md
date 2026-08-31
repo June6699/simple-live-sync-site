@@ -2,8 +2,8 @@
 
 Shared WebSocket sync service for Simple Live. The same room protocol runs on:
 
-- Node.js at `https://sync.furry.mo.cn` (the app default).
-- Cloudflare Worker at `https://simple-live-sync.3439394104.workers.dev` (the backup).
+- Node.js at `https://june6699.top` (the app default).
+- Cloudflare Worker at `https://simple-live-sync.3439394104.workers.dev` (the backup needing proxy to connect).
 
 The deployments are independent and do not share rooms or statistics. Every
 device joining a room must select the same sync service, and each status page
