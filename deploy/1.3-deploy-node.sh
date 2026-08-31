@@ -35,7 +35,7 @@ if [[ -e "$ENV_FILE" ]]; then
 fi
 
 export PUBLIC_ORIGIN="${PUBLIC_ORIGIN:-https://sync.furry.mo.cn}"
-export METRICS_ENABLED="${METRICS_ENABLED:-false}"
+export METRICS_ENABLED="${METRICS_ENABLED:-true}"
 export METRICS_DB_PATH="${METRICS_DB_PATH:-$STATE_DIR/metrics.sqlite}"
 export GEOIP_DB_PATH="${GEOIP_DB_PATH:-/var/lib/GeoIP/GeoLite2-City.mmdb}"
 export IP_HASH_SECRET="${IP_HASH_SECRET:-}"

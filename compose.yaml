@@ -9,7 +9,7 @@ services:
       HOST: 0.0.0.0
       PORT: 8787
       PUBLIC_ORIGIN: ${PUBLIC_ORIGIN:-https://sync.furry.mo.cn}
-      METRICS_ENABLED: ${METRICS_ENABLED:-false}
+      METRICS_ENABLED: ${METRICS_ENABLED:-true}
       METRICS_DB_PATH: /app/data/metrics.sqlite
       IP_HASH_SECRET: ${IP_HASH_SECRET:-}
       # The published port is host-loopback only; trust the host Nginx hop.

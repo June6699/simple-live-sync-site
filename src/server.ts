@@ -41,7 +41,7 @@ export function createSyncServer(options: SyncServerOptions = {}): SyncServerRun
   const port = options.port ?? 8787;
   const publicOrigin = normalizeOrigin(options.publicOrigin ?? DEFAULT_SERVICE_ORIGIN);
   const metricsEnabled = options.metricsEnabled ??
-    (options.metricsService !== undefined || process.env.METRICS_ENABLED === "true");
+    (options.metricsService !== undefined || process.env.METRICS_ENABLED?.trim().toLowerCase() !== "false");
   let metricsService: NodeMetricsService | undefined;
   if (metricsEnabled) {
     if (options.metricsService) {

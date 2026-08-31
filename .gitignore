@@ -9,6 +9,9 @@ public/assets/stats.js
 public/assets/stats.css
 public/assets/*.map
 .codex/project-experience.md
+deploy/*.bundle
+deploy/*.tar.gz
+deploy/*.zip
 
 # docs
 ARCHITECTURE.md

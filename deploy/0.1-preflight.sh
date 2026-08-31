@@ -22,7 +22,7 @@ if [[ -e "$ENV_FILE" ]]; then
   set +a
 fi
 
-METRICS_ENABLED="${METRICS_ENABLED:-false}"
+METRICS_ENABLED="${METRICS_ENABLED:-true}"
 METRICS_DB_PATH="${METRICS_DB_PATH:-/var/lib/simple-live-sync/metrics.sqlite}"
 GEOIP_DB_PATH="${GEOIP_DB_PATH:-/var/lib/GeoIP/GeoLite2-City.mmdb}"
 IP_HASH_SECRET="${IP_HASH_SECRET:-}"

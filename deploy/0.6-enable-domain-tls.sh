@@ -2,30 +2,17 @@
 set -euo pipefail
 
 DOMAIN="${DOMAIN:-june6699.top}"
-ENV_FILE="/etc/simple-live-sync/simple-live-sync.env"
 NGINX_FILE="/etc/nginx/conf.d/${DOMAIN}.bootstrap.conf"
+BACKUP_DIR="/var/backups/simple-live-sync/nginx"
 
-if [[ ! "$DOMAIN" =~ ^[A-Za-z0-9.-]+$ ]]; then
-  printf 'DOMAIN must contain only letters, digits, dots, and hyphens.\n' >&2
-  exit 2
-fi
+test -f "/etc/letsencrypt/live/${DOMAIN}/fullchain.pem"
+test -f "/etc/letsencrypt/live/${DOMAIN}/privkey.pem"
+test -f /etc/letsencrypt/options-ssl-nginx.conf
+test -f /etc/letsencrypt/ssl-dhparams.pem
 
-# QQ is hosted by OpenClaw; WeChat runs in its own tmux session.
-systemctl --user disable --now openclaw-gateway.service
-systemctl disable --now xianyu-bot.service
-systemctl disable --now xianyu-weekly-report.timer
-tmux kill-session -t wechat-bot 2>/dev/null || true
-
-install -d -m 0750 /etc/simple-live-sync
-cat >"$ENV_FILE" <<ENV
-PUBLIC_ORIGIN=https://${DOMAIN}
-METRICS_ENABLED=true
-METRICS_DB_PATH=/var/lib/simple-live-sync/metrics.sqlite
-GEOIP_DB_PATH=/var/lib/GeoIP/GeoLite2-City.mmdb
-ENV
-chmod 0600 "$ENV_FILE"
-if ! grep -q '^IP_HASH_SECRET=' "$ENV_FILE"; then
-  printf 'IP_HASH_SECRET=%s\n' "$(openssl rand -hex 32)" >>"$ENV_FILE"
+install -d -m 0700 "$BACKUP_DIR"
+if [[ -f "$NGINX_FILE" ]]; then
+  cp -a "$NGINX_FILE" "$BACKUP_DIR/$(basename "$NGINX_FILE").$(date -u +%Y%m%dT%H%M%SZ)"
 fi
 
 cat >"$NGINX_FILE" <<'NGINX'
@@ -38,6 +25,21 @@ server {
         root /var/www/html;
         default_type text/plain;
     }
+
+    location / {
+        return 301 https://$host$request_uri;
+    }
+}
+
+server {
+    listen 443 ssl http2;
+    listen [::]:443 ssl http2;
+    server_name __DOMAIN__;
+
+    ssl_certificate /etc/letsencrypt/live/__DOMAIN__/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/__DOMAIN__/privkey.pem;
+    include /etc/letsencrypt/options-ssl-nginx.conf;
+    ssl_dhparam /etc/letsencrypt/ssl-dhparams.pem;
 
     location = /sync {
         proxy_pass http://127.0.0.1:8787;
@@ -94,15 +96,5 @@ server {
 NGINX
 
 sed -i "s/__DOMAIN__/${DOMAIN}/g" "$NGINX_FILE"
-systemctl restart simple-live-sync.service
 nginx -t
 systemctl reload nginx
-for attempt in {1..10}; do
-  if curl --fail --silent --show-error -H "Host: ${DOMAIN}" http://127.0.0.1/health?format=json; then
-    exit 0
-  fi
-  sleep 1
-done
-
-printf 'The service did not become ready behind Nginx.\n' >&2
-exit 1

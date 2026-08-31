@@ -13,7 +13,7 @@ Environment=PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 Environment=HOST=127.0.0.1
 Environment=PORT=8787
 Environment=PUBLIC_ORIGIN=https://sync.furry.mo.cn
-Environment=METRICS_ENABLED=false
+Environment=METRICS_ENABLED=true
 Environment=METRICS_DB_PATH=/var/lib/simple-live-sync/metrics.sqlite
 Environment=GEOIP_DB_PATH=/var/lib/GeoIP/GeoLite2-City.mmdb
 EnvironmentFile=-/etc/simple-live-sync/simple-live-sync.env

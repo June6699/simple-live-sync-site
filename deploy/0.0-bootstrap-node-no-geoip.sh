@@ -47,7 +47,7 @@ if [[ ! -e "$ENV_FILE" ]]; then
   install -m 0600 /dev/null "$ENV_FILE"
   cat >"$ENV_FILE" <<'ENV'
 PUBLIC_ORIGIN=https://sync.furry.mo.cn
-METRICS_ENABLED=false
+METRICS_ENABLED=true
 METRICS_DB_PATH=/var/lib/simple-live-sync/metrics.sqlite
 GEOIP_DB_PATH=/var/lib/GeoIP/GeoLite2-City.mmdb
 ENV

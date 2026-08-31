@@ -36,7 +36,8 @@ favorite sync, history sync, shield-word sync, and Bilibili account sync.
 Health checks, dashboard/API requests, rejected actions, and probe traffic are
 not counted as business calls.
 
-Raw IP addresses are never stored. The Node deployment accepts client location
+Statistics are enabled by default; set `METRICS_ENABLED=false` only when you
+explicitly want to disable them. Raw IP addresses are never stored. The Node deployment accepts client location
 only from Nginx-overwritten headers and hashes the address with a private salt
 for short-lived unique-visitor calculation. Stored geography is limited to
 country and first-level region codes. Set `METRICS_ENABLED=false` to disable

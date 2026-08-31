@@ -20,7 +20,7 @@ if [[ -e "$ENV_FILE" ]]; then
   set +a
 fi
 
-METRICS_ENABLED="${METRICS_ENABLED:-false}"
+METRICS_ENABLED="${METRICS_ENABLED:-true}"
 METRICS_DB_PATH="${METRICS_DB_PATH:-/var/lib/simple-live-sync/metrics.sqlite}"
 
 cd "$PROJECT_ROOT"
