@@ -93,3 +93,17 @@ Production endpoints:
 - `https://sync.furry.mo.cn/`
 - `https://sync.furry.mo.cn/health`
 - `wss://sync.furry.mo.cn/sync`
+
+### GeoIP data source
+
+The self-hosted Node deployment uses the `GeoLite2-City.mmdb` database for
+country and first-level region lookup. The current database was downloaded on
+2026-08-31 from the [P3TERX/GeoLite.mmdb](https://github.com/P3TERX/GeoLite.mmdb)
+distribution of MaxMind GeoLite2
+([GeoLite2-City.mmdb download](https://github.com/P3TERX/GeoLite.mmdb/raw/download/GeoLite2-City.mmdb))
+and is installed at `/var/lib/GeoIP/GeoLite2-City.mmdb`.
+The database and its contents remain subject to MaxMind's
+[GeoLite2 End User License Agreement](https://www.maxmind.com/en/geolite2/eula)
+and the [Creative Commons Attribution-ShareAlike 4.0 license](https://creativecommons.org/licenses/by-sa/4.0/).
+The binary database is deployment state and must not be committed to this
+repository.

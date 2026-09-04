@@ -55,6 +55,11 @@ systemctl enable --now simple-live-sync-geoipupdate.timer
 systemctl start simple-live-sync-geoipupdate.service
 ```
 
+The current `GeoLite2-City.mmdb` was obtained from the
+[P3TERX/GeoLite.mmdb](https://github.com/P3TERX/GeoLite.mmdb) distribution of
+MaxMind GeoLite2. Keep the MaxMind GeoLite2 EULA and CC BY-SA 4.0 attribution
+with any manual database refresh; do not commit the binary database.
+
 Nginx reads the City database with `auto_reload 1h`, so a normal GeoIP update
 does not require an Nginx reload. The site overwrites `X-Real-IP`,
 `X-Forwarded-For`, `X-Geo-Country`, and `X-Geo-Region`, and clears client-sent
