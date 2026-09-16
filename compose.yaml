@@ -5,6 +5,7 @@ services:
     image: simple-live-sync:${SIMPLE_LIVE_SYNC_IMAGE_TAG:-current}
     container_name: simple-live-sync
     restart: unless-stopped
+    user: "33:33"
     environment:
       HOST: 0.0.0.0
       PORT: 8787
