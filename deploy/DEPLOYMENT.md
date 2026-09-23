@@ -74,6 +74,7 @@ Supported application settings in
 | Variable | Production value | Purpose |
 | --- | --- | --- |
 | `PUBLIC_ORIGIN` | `https://sync.furry.mo.cn` | Public URL used by the Node server. |
+| `METRICS_PROBE_ORIGIN` | `http://127.0.0.1:8787` | Local health/WebSocket origin used by hourly self-availability probes. Keep this on the private listener so public TLS or备案 failures do not mark the process down. |
 | `METRICS_ENABLED` | `true` or `false` (default `true`) | Fail-open statistics switch. |
 | `METRICS_DB_PATH` | `/var/lib/simple-live-sync/metrics.sqlite` | Host/systemd SQLite path. Compose maps the same state directory to `/app/data`. |
 | `GEOIP_DB_PATH` | `/var/lib/GeoIP/GeoLite2-City.mmdb` | Host/systemd GeoIP database path. |

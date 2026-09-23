@@ -40,6 +40,11 @@ export function createSyncServer(options: SyncServerOptions = {}): SyncServerRun
   const host = options.host ?? "127.0.0.1";
   const port = options.port ?? 8787;
   const publicOrigin = normalizeOrigin(options.publicOrigin ?? DEFAULT_SERVICE_ORIGIN);
+  // Probe the local Node listener by default. Public TLS/备案/CDN failures
+  // should be reported separately from the sync process actually being down.
+  const probeOrigin = normalizeOrigin(
+    process.env.METRICS_PROBE_ORIGIN ?? `http://127.0.0.1:${port}`
+  );
   const metricsEnabled = options.metricsEnabled ??
     (options.metricsService !== undefined || process.env.METRICS_ENABLED?.trim().toLowerCase() !== "false");
   let metricsService: NodeMetricsService | undefined;
@@ -69,6 +74,7 @@ export function createSyncServer(options: SyncServerOptions = {}): SyncServerRun
     }
     probeTimer = scheduleNodeAvailabilityProbe(
       metricsService,
+      probeOrigin,
       publicOrigin,
       scheduleAvailabilityProbe
     );
@@ -371,6 +377,7 @@ function sendStaticFile(
 
 function scheduleNodeAvailabilityProbe(
   metricsService: NodeMetricsService,
+  probeOrigin: string,
   publicOrigin: string,
   scheduleNext: () => void
 ): ReturnType<typeof setTimeout> {
@@ -382,7 +389,7 @@ function scheduleNodeAvailabilityProbe(
   }
   const timer = setTimeout(async () => {
     try {
-      const event = await runNodeAvailabilityProbe(publicOrigin);
+      const event = await runNodeAvailabilityProbe(probeOrigin, publicOrigin);
       metricsService.record(event, { source: "node", countryCode: "ZZ", regionCode: "", isProbe: true }, Date.now());
     } catch (error) {
       console.error("Node availability probe failed", safeError(error));
@@ -393,7 +400,7 @@ function scheduleNodeAvailabilityProbe(
   return timer;
 }
 
-async function runNodeAvailabilityProbe(publicOrigin: string) {
+async function runNodeAvailabilityProbe(probeOrigin: string, targetOrigin = probeOrigin) {
   const startedAt = Date.now();
   let httpOk = false;
   let websocketOk = false;
@@ -401,7 +408,7 @@ async function runNodeAvailabilityProbe(publicOrigin: string) {
   let websocketLatencyMs: number | undefined;
   let errorCode = "";
   try {
-    const response = await fetch(`${publicOrigin}/health?format=json`, { signal: AbortSignal.timeout(10_000) });
+    const response = await fetch(`${probeOrigin}/health?format=json`, { signal: AbortSignal.timeout(10_000) });
     const body = (await response.json()) as { status?: unknown };
     httpOk = response.ok && body.status === true;
     httpLatencyMs = Date.now() - startedAt;
@@ -412,7 +419,7 @@ async function runNodeAvailabilityProbe(publicOrigin: string) {
   try {
     const { WebSocket } = await import("ws");
     websocketOk = await new Promise<boolean>((resolve) => {
-      const socket = new WebSocket(publicOrigin.replace(/^http/, "ws") + "/sync");
+      const socket = new WebSocket(probeOrigin.replace(/^http/, "ws") + "/sync");
       const requestId = `availability-${Date.now()}`;
       const timer = setTimeout(() => { socket.terminate(); resolve(false); }, 10_000);
       const started = Date.now();
@@ -437,7 +444,7 @@ async function runNodeAvailabilityProbe(publicOrigin: string) {
   }
   return {
     type: "availability_check" as const,
-    target: publicOrigin,
+    target: targetOrigin,
     httpOk,
     websocketOk,
     httpLatencyMs,
