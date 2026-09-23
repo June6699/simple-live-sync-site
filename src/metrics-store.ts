@@ -1094,7 +1094,10 @@ function emptyEventCounts(): Record<UsageMetricEventType, number> {
     send_favorite: 0,
     send_history: 0,
     send_shield_word: 0,
-    send_bili_account: 0
+    send_bili_account: 0,
+    send_douyu_account: 0,
+    send_douyin_account: 0,
+    send_kuaishou_account: 0
   };
 }
 

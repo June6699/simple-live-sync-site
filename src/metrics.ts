@@ -9,7 +9,10 @@ export const USAGE_METRIC_EVENT_TYPES = [
   "send_favorite",
   "send_history",
   "send_shield_word",
-  "send_bili_account"
+  "send_bili_account",
+  "send_douyu_account",
+  "send_douyin_account",
+  "send_kuaishou_account"
 ] as const;
 
 export type UsageMetricEventType = (typeof USAGE_METRIC_EVENT_TYPES)[number];

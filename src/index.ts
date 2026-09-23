@@ -58,14 +58,20 @@ const SEND_EVENT_BY_ACTION: Record<string, string> = {
   sendFavorite: "favoriteReceived",
   sendHistory: "historyReceived",
   sendShieldWord: "shieldWordReceived",
-  sendBiliAccount: "biliAccountReceived"
+  sendBiliAccount: "biliAccountReceived",
+  sendDouyuAccount: "douyuAccountReceived",
+  sendDouyinAccount: "douyinAccountReceived",
+  sendKuaishouAccount: "kuaishouAccountReceived"
 };
 
 const METRIC_EVENT_BY_ACTION: Record<string, UsageMetricEventType> = {
   sendFavorite: "send_favorite",
   sendHistory: "send_history",
   sendShieldWord: "send_shield_word",
-  sendBiliAccount: "send_bili_account"
+  sendBiliAccount: "send_bili_account",
+  sendDouyuAccount: "send_douyu_account",
+  sendDouyinAccount: "send_douyin_account",
+  sendKuaishouAccount: "send_kuaishou_account"
 };
 
 const INTERNAL_VISITOR_HEADER = "x-simple-live-visitor";
@@ -240,6 +246,9 @@ export class RoomHubCore {
       case "sendHistory":
       case "sendShieldWord":
       case "sendBiliAccount":
+      case "sendDouyuAccount":
+      case "sendDouyinAccount":
+      case "sendKuaishouAccount":
         this.forwardContent(socket, message, message.type);
         return;
       case "leaveRoom":

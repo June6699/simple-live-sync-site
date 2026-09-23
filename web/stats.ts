@@ -81,7 +81,10 @@ const EVENT_KEYS = [
   "send_favorite",
   "send_history",
   "send_shield_word",
-  "send_bili_account"
+  "send_bili_account",
+  "send_douyu_account",
+  "send_douyin_account",
+  "send_kuaishou_account"
 ] as const;
 
 type EventKey = (typeof EVENT_KEYS)[number];
@@ -116,6 +119,21 @@ const EVENT_META: Record<EventKey, { label: string; color: string; aliases: stri
     label: "同步哔哩账号",
     color: "#2c8795",
     aliases: ["send_bili_account", "sync_bili_account", "sendBiliAccount"]
+  },
+  send_douyu_account: {
+    label: "同步斗鱼账号",
+    color: "#e06a3b",
+    aliases: ["send_douyu_account", "sync_douyu_account", "sendDouyuAccount"]
+  },
+  send_douyin_account: {
+    label: "同步抖音账号",
+    color: "#222222",
+    aliases: ["send_douyin_account", "sync_douyin_account", "sendDouyinAccount"]
+  },
+  send_kuaishou_account: {
+    label: "同步快手账号",
+    color: "#e44d32",
+    aliases: ["send_kuaishou_account", "sync_kuaishou_account", "sendKuaishouAccount"]
   }
 };
 
@@ -729,7 +747,10 @@ function renderTimeline(): void {
       enabled: true,
       decal: { show: true },
       description: byId("timeline-summary").textContent
-    },
+  },
+  send_douyu_account: { label: "同步斗鱼账号", color: "#e06a3b", aliases: ["send_douyu_account", "sync_douyu_account", "sendDouyuAccount"] },
+  send_douyin_account: { label: "同步抖音账号", color: "#222222", aliases: ["send_douyin_account", "sync_douyin_account", "sendDouyinAccount"] },
+  send_kuaishou_account: { label: "同步快手账号", color: "#e44d32", aliases: ["send_kuaishou_account", "sync_kuaishou_account", "sendKuaishouAccount"] },
     color: [palette.brand],
     grid: { left: 48, right: 18, top: 24, bottom: state.timeline.length > 100 ? 56 : 40 },
     tooltip: {
