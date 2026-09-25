@@ -1,4 +1,4 @@
-const origin = String(process.argv[2] ?? "https://sync.furry.mo.cn").replace(/\/+$/, "");
+const origin = String(process.argv[2] ?? "https://june6699.top").replace(/\/+$/, "");
 const expectMetrics = process.argv.includes("--expect-metrics");
 const timeoutMs = 8_000;
 

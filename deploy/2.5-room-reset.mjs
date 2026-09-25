@@ -2,7 +2,7 @@ import { writeFile } from "node:fs/promises";
 
 import WebSocket from "ws";
 
-const [mode, endpoint = "wss://sync.furry.mo.cn/sync", value] = process.argv.slice(2);
+const [mode, endpoint = "wss://june6699.top/sync", value] = process.argv.slice(2);
 const timeoutMs = 8_000;
 
 if (mode === "create") {

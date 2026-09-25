@@ -2,7 +2,7 @@
 
 The Node service runs from `/opt/simple-live-sync` and listens only on
 `127.0.0.1:8787`. Nginx owns public HTTP, HTTPS, WebSocket traffic, trusted
-client-IP headers, and GeoIP lookup for `sync.furry.mo.cn`. The Cloudflare
+client-IP headers, and GeoIP lookup for `june6699.top`. The Cloudflare
 Worker is an independent deployment and does not share rooms or statistics.
 
 ## One-time host setup
@@ -73,7 +73,7 @@ Supported application settings in
 
 | Variable | Production value | Purpose |
 | --- | --- | --- |
-| `PUBLIC_ORIGIN` | `https://sync.furry.mo.cn` | Public URL used by the Node server. |
+| `PUBLIC_ORIGIN` | `https://june6699.top` | Public URL used by the Node server. |
 | `METRICS_PROBE_ORIGIN` | `http://127.0.0.1:8787` | Local health/WebSocket origin used by hourly self-availability probes. Keep this on the private listener so public TLS or备案 failures do not mark the process down. |
 | `METRICS_ENABLED` | `true` or `false` (default `true`) | Fail-open statistics switch. |
 | `METRICS_DB_PATH` | `/var/lib/simple-live-sync/metrics.sqlite` | Host/systemd SQLite path. Compose maps the same state directory to `/app/data`. |
@@ -141,9 +141,9 @@ Docker deploy script.
 ```bash
 docker compose ps
 docker compose logs --tail=100 sync
-curl https://sync.furry.mo.cn/health?format=json
-node deploy/2.6-http-smoke.mjs https://sync.furry.mo.cn --expect-metrics
-node deploy/2.2-public-smoke.mjs wss://sync.furry.mo.cn/sync --ping-only
+curl https://june6699.top/health?format=json
+node deploy/2.6-http-smoke.mjs https://june6699.top --expect-metrics
+node deploy/2.2-public-smoke.mjs wss://june6699.top/sync --ping-only
 bash deploy/0.2-backup-metrics.sh
 ```
 
@@ -203,6 +203,31 @@ while either runtime is writing to it.
 
 Every Nginx candidate is tested before reload. Previous site files are kept in
 `/var/backups/simple-live-sync/nginx`; to roll one back, install the chosen file
-at `/etc/nginx/sites-available/sync.furry.mo.cn.conf`, run `nginx -t`, and only
+at `/etc/nginx/conf.d/june6699.top.conf`, run `nginx -t`, and only
 then reload Nginx. Certificate renewal continues to validate Nginx before
 reload through the installed Certbot deploy hook.
+
+### Code-only updates (2026-09-25 onward)
+
+Since 2026-09-25 the running container bind-mounts the built artifacts from
+the host instead of baking them into the image:
+
+- `/opt/simple-live-sync/dist:/app/dist:ro`
+- `/opt/simple-live-sync/public:/app/public:ro`
+
+To ship a code change without rebuilding the image (the npm-inside-docker
+step is slow from this host's network and there is no registry mirror):
+
+```bash
+# on the dev machine, in the repo root
+npm run build:node && npm run build:web
+tar -czf /tmp/sls-dist.tgz dist public
+scp /tmp/sls-dist.tgz june-server:/tmp/
+ssh june-server 'sudo tar -xzf /tmp/sls-dist.tgz -C /opt/simple-live-sync'
+ssh june-server 'cd /opt/simple-live-sync && sudo docker compose up -d'
+```
+
+`docker compose up -d` recreates the container from the existing local image
+(no pull). Only rebuild the image when `package.json` / `package-lock.json`
+change. Note the host `node_modules` is production-only (no `tsc`), so build
+`dist` on the dev machine unless dev dependencies are installed on the host.

@@ -12,7 +12,7 @@ if (endpoints.length > 1) {
   throw new Error("expected at most one WebSocket endpoint");
 }
 const endpoint = endpoints[0] ??
-  "wss://sync.furry.mo.cn/sync";
+  "wss://june6699.top/sync";
 const pingOnly = args.includes("--ping-only");
 const timeoutMs = 8_000;
 

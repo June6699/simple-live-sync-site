@@ -9,7 +9,7 @@ services:
     environment:
       HOST: 0.0.0.0
       PORT: 8787
-      PUBLIC_ORIGIN: ${PUBLIC_ORIGIN:-https://sync.furry.mo.cn}
+      PUBLIC_ORIGIN: ${PUBLIC_ORIGIN:-https://june6699.top}
       METRICS_PROBE_ORIGIN: ${METRICS_PROBE_ORIGIN:-http://127.0.0.1:8787}
       METRICS_ENABLED: ${METRICS_ENABLED:-true}
       METRICS_DB_PATH: /app/data/metrics.sqlite

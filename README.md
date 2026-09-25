@@ -90,9 +90,9 @@ MaxMind GeoLite2 setup.
 
 Production endpoints:
 
-- `https://sync.furry.mo.cn/`
-- `https://sync.furry.mo.cn/health`
-- `wss://sync.furry.mo.cn/sync`
+- `https://june6699.top/`
+- `https://june6699.top/health`
+- `wss://june6699.top/sync`
 
 ### GeoIP data source
 

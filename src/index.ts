@@ -47,7 +47,7 @@ type ClientSession = {
 };
 
 export const VERSION = "0.1.0";
-export const DEFAULT_SERVICE_ORIGIN = "https://sync.furry.mo.cn";
+export const DEFAULT_SERVICE_ORIGIN = "https://june6699.top";
 export const ROOM_TTL_MS = 600_000;
 export const HEARTBEAT_TIMEOUT_MS = 45_000;
 export const MAX_ROOM_CLIENTS = 8;

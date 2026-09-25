@@ -1,7 +1,7 @@
 import WebSocket from "ws";
 
 const primaryEndpoint =
-  process.argv[2] ?? "wss://sync.furry.mo.cn/sync";
+  process.argv[2] ?? "wss://june6699.top/sync";
 const backupEndpoint =
   process.argv[3] ?? "wss://simple-live-sync.3439394104.workers.dev/sync";
 const timeoutMs = 8_000;
