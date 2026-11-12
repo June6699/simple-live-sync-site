@@ -907,8 +907,8 @@ export function renderHomePage(origin: string): string {
       <section class="card">
         <h2>下载</h2>
         <div class="downloads">
-          <a class="download" href="https://github.com/June6699/dart_simple_live/releases/tag/v1.12.7"><strong>Simple Live v1.12.7</strong><span>Android / Windows / Linux</span></a>
-          <a class="download" href="https://github.com/June6699/dart_simple_live/releases/tag/tv_v1.7.8"><strong>Simple Live TV tv_v1.7.8</strong><span>Android TV APK</span></a>
+          <a class="download" href="https://github.com/June6699/dart_simple_live/releases#release-v1.13.3"><strong>Simple Live v1.13.3</strong><span>Android / Windows / Linux</span></a>
+          <a class="download" href="https://github.com/June6699/dart_simple_live/releases#release-tv_v1.8.3"><strong>Simple Live TV tv_v1.8.3</strong><span>Android TV APK</span></a>
         </div>
       </section>
     </main>
