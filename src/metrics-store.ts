@@ -1097,7 +1097,8 @@ function emptyEventCounts(): Record<UsageMetricEventType, number> {
     send_bili_account: 0,
     send_douyu_account: 0,
     send_douyin_account: 0,
-    send_kuaishou_account: 0
+    send_kuaishou_account: 0,
+    send_iptv_favorite: 0,
   };
 }
 
