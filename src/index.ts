@@ -61,7 +61,8 @@ const SEND_EVENT_BY_ACTION: Record<string, string> = {
   sendBiliAccount: "biliAccountReceived",
   sendDouyuAccount: "douyuAccountReceived",
   sendDouyinAccount: "douyinAccountReceived",
-  sendKuaishouAccount: "kuaishouAccountReceived"
+  sendKuaishouAccount: "kuaishouAccountReceived",
+  sendIptvFavorite: "iptvFavoriteReceived"
 };
 
 const METRIC_EVENT_BY_ACTION: Record<string, UsageMetricEventType> = {
@@ -71,7 +72,8 @@ const METRIC_EVENT_BY_ACTION: Record<string, UsageMetricEventType> = {
   sendBiliAccount: "send_bili_account",
   sendDouyuAccount: "send_douyu_account",
   sendDouyinAccount: "send_douyin_account",
-  sendKuaishouAccount: "send_kuaishou_account"
+  sendKuaishouAccount: "send_kuaishou_account",
+  sendIptvFavorite: "send_iptv_favorite"
 };
 
 const INTERNAL_VISITOR_HEADER = "x-simple-live-visitor";
@@ -249,6 +251,7 @@ export class RoomHubCore {
       case "sendDouyuAccount":
       case "sendDouyinAccount":
       case "sendKuaishouAccount":
+      case "sendIptvFavorite":
         this.forwardContent(socket, message, message.type);
         return;
       case "leaveRoom":

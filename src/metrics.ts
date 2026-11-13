@@ -12,7 +12,8 @@ export const USAGE_METRIC_EVENT_TYPES = [
   "send_bili_account",
   "send_douyu_account",
   "send_douyin_account",
-  "send_kuaishou_account"
+  "send_kuaishou_account",
+  "send_iptv_favorite"
 ] as const;
 
 export type UsageMetricEventType = (typeof USAGE_METRIC_EVENT_TYPES)[number];
